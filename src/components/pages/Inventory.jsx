@@ -8,7 +8,6 @@ import {
   Trash2,
   PackagePlus,
   Package,
-  ChartColumn,
   ArrowLeft,
 } from 'lucide-react'
 import { useApp } from '../../hooks/useApp'
@@ -64,125 +63,6 @@ const INVENTORY_COLUMNS = [
   { label: 'Actions' },
 ]
 
-const MARGIN_COLUMNS = [
-  { label: 'Product' },
-  { label: 'Stock' },
-  { label: 'Cost/Unit' },
-  { label: 'Target Margin %' },
-  { label: 'Suggested Sell Price' },
-  { label: 'Stock Value' },
-]
-
-/**
- * For each product (or variation), derive avg net revenue per unit from
- * single-product sales only.
- */
-function computeProductMarginData(products, sales, shipments) {
-  const rows = []
-
-  products.forEach(product => {
-    if (product.hasVariations && product.variations && product.variations.length > 0) {
-      product.variations.forEach(variation => {
-        const stock = calculateVariationStock(variation)
-        const cost = calculateVariationCostPerUnit(variation, shipments)
-        const stockValue = stock * cost
-
-        const variationSales = sales.filter(s =>
-          s.items && s.items.some(i => i.productId === product.id && i.variationId === variation.id)
-        )
-
-        let totalRevenue = 0
-        let totalUnits = 0
-        let multiOrderCount = 0
-
-        variationSales.forEach(s => {
-          const fees = s.fees || {}
-          const totalFees =
-            (fees.commission || 0) + (fees.transaction || 0) + (fees.service || 0) +
-            (fees.saver || 0) + (fees.voucher || 0) + (fees.shipping || 0)
-          const netRevenue = (s.sellingPrice || 0) - totalFees
-
-          const distinctKeys = new Set(s.items.map(i => `${i.productId}:${i.variationId || ''}`))
-          if (distinctKeys.size === 1) {
-            const qty = s.items.reduce((sum, i) => sum + i.quantity, 0)
-            totalRevenue += netRevenue
-            totalUnits += qty
-          } else {
-            multiOrderCount++
-          }
-        })
-
-        const targetMarginPct = variation.targetMarginPct ?? null
-        const suggestedSellPrice =
-          targetMarginPct !== null && targetMarginPct < 100 && cost > 0
-            ? cost / (1 - targetMarginPct / 100)
-            : null
-
-        rows.push({
-          key: variation.id,
-          product,
-          variation,
-          label: `${product.name} — ${getVariationLabel(variation)}`,
-          stock, cost, stockValue, targetMarginPct, suggestedSellPrice,
-          multiOrderCount, totalUnits,
-        })
-      })
-    } else {
-      const stock = calculateStock(product, sales)
-      const cost = calculateFIFOCostPerUnit(product, shipments)
-      const stockValue = stock * cost
-
-      const productSales = sales.filter(s => {
-        if (s.items && s.items.length > 0) return s.items.some(i => i.productId === product.id)
-        return s.productId === product.id
-      })
-
-      let totalRevenue = 0
-      let totalUnits = 0
-      let multiOrderCount = 0
-
-      productSales.forEach(s => {
-        const fees = s.fees || {}
-        const totalFees =
-          (fees.commission || 0) + (fees.transaction || 0) + (fees.service || 0) +
-          (fees.saver || 0) + (fees.voucher || 0) + (fees.shipping || 0)
-        const netRevenue = (s.sellingPrice || 0) - totalFees
-
-        if (s.items && s.items.length > 0) {
-          const distinctProducts = new Set(s.items.map(i => i.productId))
-          if (distinctProducts.size === 1) {
-            const qty = s.items.reduce((sum, i) => sum + i.quantity, 0)
-            totalRevenue += netRevenue
-            totalUnits += qty
-          } else {
-            multiOrderCount++
-          }
-        } else if (s.productId === product.id) {
-          totalRevenue += netRevenue
-          totalUnits += s.quantity || 0
-        }
-      })
-
-      const targetMarginPct = product.targetMarginPct ?? null
-      const suggestedSellPrice =
-        targetMarginPct !== null && targetMarginPct < 100 && cost > 0
-          ? cost / (1 - targetMarginPct / 100)
-          : null
-
-      rows.push({
-        key: product.id,
-        product,
-        variation: null,
-        label: product.name,
-        stock, cost, stockValue, targetMarginPct, suggestedSellPrice,
-        multiOrderCount, totalUnits,
-      })
-    }
-  })
-
-  return rows
-}
-
 // ===== Split comma-separated values =====
 function splitValues(str) {
   return str
@@ -225,7 +105,6 @@ const emptyAddForm = {
 export default function Inventory() {
   const { state, dispatch } = useApp()
   const [view, setView] = useState('list')
-  const [activeTab, setActiveTab] = useState('inventory')
   const [editId, setEditId] = useState(null)
   const [restockTarget, setRestockTarget] = useState(null) // { productId, variationId? }
   const [confirmDelete, setConfirmDelete] = useState(null)
@@ -408,23 +287,6 @@ export default function Inventory() {
     dispatch({ type: 'DELETE_PRODUCT', payload: product.id })
   }
 
-  function handleTargetMargin(row, value) {
-    const pct = parseFloat(value)
-    const newPct = isNaN(pct) || value === '' ? null : pct
-    if (row.variation) {
-      const product = row.product
-      const updatedVariations = product.variations.map(v =>
-        v.id === row.variation.id ? { ...v, targetMarginPct: newPct } : v
-      )
-      dispatch({ type: 'UPDATE_PRODUCT', payload: { ...product, variations: updatedVariations } })
-    } else {
-      dispatch({
-        type: 'UPDATE_PRODUCT',
-        payload: { ...row.product, targetMarginPct: newPct },
-      })
-    }
-  }
-
   function toggleExpand(productId) {
     setExpandedProducts(prev => {
       const next = new Set(prev)
@@ -435,13 +297,6 @@ export default function Inventory() {
   }
 
   const sortedProducts = [...state.products].sort((a, b) => a.name.localeCompare(b.name))
-  const marginData = computeProductMarginData(sortedProducts, state.sales, state.shipments)
-
-  const totalStockValue = marginData.reduce((sum, d) => sum + d.stockValue, 0)
-  const trackedMargins = marginData.filter(d => d.targetMarginPct !== null)
-  const avgOverallMargin = trackedMargins.length > 0
-    ? trackedMargins.reduce((sum, d) => sum + d.targetMarginPct, 0) / trackedMargins.length
-    : null
 
   return (
     <div>
@@ -452,261 +307,158 @@ export default function Inventory() {
             <h1>Inventory</h1>
             <Button variant="primary" onClick={openAdd}>+ Add Product</Button>
           </div>
-          <div style={{ display: 'flex', gap: 4, marginTop: 12 }}>
-            {['inventory', 'margin'].map(tab => (
-              <button
-                key={tab}
-                onClick={() => setActiveTab(tab)}
-                style={{
-                  padding: '6px 16px',
-                  borderRadius: 'var(--radius-sm)',
-                  border: '1px solid var(--border-color)',
-                  background: activeTab === tab ? 'var(--accent-solid)' : 'var(--bg-secondary)',
-                  color: activeTab === tab ? '#fff' : 'var(--text-primary)',
-                  cursor: 'pointer',
-                  fontSize: 13,
-                  fontWeight: activeTab === tab ? 600 : 400,
-                  textTransform: 'capitalize',
-                }}
-              >
-                {tab === 'inventory'
-                  ? 'Products'
-                  : avgOverallMargin !== null
-                  ? `Margin (${avgOverallMargin.toFixed(1)}%)`
-                  : 'Margin'}
-              </button>
-            ))}
-          </div>
         </div>
 
-        {/* ---- Products Tab ---- */}
-        {activeTab === 'inventory' && (
-          <DataTable
-            columns={INVENTORY_COLUMNS}
-            data={sortedProducts}
-            renderRow={p => {
-              if (p.hasVariations) {
-                const totalStock = calculateStock(p, state.sales)
-                const isExpanded = expandedProducts.has(p.id)
-                const isOut = totalStock <= 0
-                const isLow = !isOut && totalStock <= LOW_STOCK
-                return (
-                  <Fragment key={p.id}>
-                    {/* Parent row */}
-                    <tr style={{ background: 'var(--bg-secondary)' }}>
-                      <td>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                          <button
-                            onClick={() => toggleExpand(p.id)}
-                            style={{
-                              background: 'none', border: '1px solid var(--border-color)',
-                              borderRadius: 4, cursor: 'pointer', padding: '1px 6px',
-                              fontSize: 11, color: 'var(--text-secondary)', lineHeight: 1.4,
-                              display: 'inline-flex', alignItems: 'center',
-                            }}
-                            title={isExpanded ? 'Collapse variations' : 'Expand variations'}
-                          >
-                            {isExpanded
-                              ? <ChevronUp size={14} />
-                              : <ChevronDown size={14} />}
-                          </button>
-                          <div>
-                            <strong>{p.name}</strong>
-                            {isOut && <StockBadge tone="out" label="Out of stock" />}
-                            {isLow && <StockBadge tone="low" label="Low stock" />}
-                            <br />
-                            <span style={{ fontSize: 11, color: 'var(--accent-text)', fontWeight: 600 }}>
-                              {p.variations.length} variation{p.variations.length !== 1 ? 's' : ''}
-                              {' · '}
-                              {p.tier1?.name}{p.tier2 ? ` × ${p.tier2.name}` : ''}
-                            </span>
-                            {p.sku && (
-                              <><br /><span style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'monospace' }}>{p.sku}</span></>
-                            )}
-                            {p.link && (
-                              <>
-                                <br />
-                                <a href={p.link} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: 'var(--accent-text)' }}>
-                                  View link <ExternalLink className="icon-sm" />
-                                </a>
-                              </>
-                            )}
-                          </div>
-                        </div>
-                      </td>
-                      <td><strong>{totalStock}</strong></td>
-                      <td style={{ color: 'var(--text-muted)', fontSize: 12 }}>
-                        per variation <ChevronDown className="icon-sm" />
-                      </td>
-                      <td>—</td>
-                      <td>
-                        <Button variant="icon" onClick={() => openEdit(p)} title="Edit"><Pencil /></Button>
-                        <Button variant="icon" delete onClick={() => setConfirmDelete(p)} title="Delete"><Trash2 /></Button>
-                      </td>
-                    </tr>
-
-                    {/* Variation rows */}
-                    {isExpanded && p.variations.map(v => {
-                      const vStock = calculateVariationStock(v)
-                      const vCost = calculateVariationCostPerUnit(v, state.shipments)
-                      const vOut = vStock <= 0
-                      const vLow = !vOut && vStock <= LOW_STOCK
-                      return (
-                        <tr key={v.id} style={{ background: 'var(--bg-primary)' }}>
-                          <td style={{ paddingLeft: 48 }}>
-                            <span style={{ color: 'var(--text-secondary)', fontSize: 13 }}>
-                              {getVariationLabel(v)}
-                            </span>
-                            {vOut && <StockBadge tone="out" label="Out" fontSize={11} />}
-                            {vLow && <StockBadge tone="low" label="Low" fontSize={11} />}
-                            {v.sku && (
-                              <><br /><span style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'monospace' }}>{v.sku}</span></>
-                            )}
-                          </td>
-                          <td>{vStock}</td>
-                          <td>{formatMYR(vCost)}</td>
-                          <td>{v.batches?.length ?? 0}</td>
-                          <td>
-                            <Button
-                              variant="icon"
-                              onClick={() => setRestockTarget({ productId: p.id, variationId: v.id })}
-                              title="Restock"
-                            >
-                              <PackagePlus />
-                            </Button>
-                            <Button
-                              variant="icon"
-                              delete
-                              onClick={() => handleDeleteVariation(p, v)}
-                              title="Delete variation"
-                            >
-                              <Trash2 />
-                            </Button>
-                          </td>
-                        </tr>
-                      )
-                    })}
-                  </Fragment>
-                )
-              }
-
-              // Non-variation product
-              const stock = calculateStock(p, state.sales)
-              const cost = calculateFIFOCostPerUnit(p, state.shipments)
-              const isOut = stock <= 0
-              const isLow = !isOut && stock <= LOW_STOCK
+        <DataTable
+          columns={INVENTORY_COLUMNS}
+          data={sortedProducts}
+          renderRow={p => {
+            if (p.hasVariations) {
+              const totalStock = calculateStock(p, state.sales)
+              const isExpanded = expandedProducts.has(p.id)
+              const isOut = totalStock <= 0
+              const isLow = !isOut && totalStock <= LOW_STOCK
               return (
-                <tr key={p.id}>
-                  <td>
-                    <strong>{p.name}</strong>
-                    {isOut && <StockBadge tone="out" label="Out of stock" />}
-                    {isLow && <StockBadge tone="low" label="Low stock" />}
-                    {p.sku && (
-                      <><br /><span style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'monospace' }}>{p.sku}</span></>
-                    )}
-                    {p.link && (
-                      <>
-                        <br />
-                        <a href={p.link} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: 'var(--accent-text)' }}>
-                          View link <ExternalLink className="icon-sm" />
-                        </a>
-                      </>
-                    )}
-                  </td>
-                  <td>{stock}</td>
-                  <td>{formatMYR(cost)}</td>
-                  <td>{p.batches?.length ?? 0}</td>
-                  <td>
-                    <Button variant="icon" onClick={() => openEdit(p)} title="Edit"><Pencil /></Button>
-                    <Button variant="icon" onClick={() => setRestockTarget({ productId: p.id })} title="Restock"><PackagePlus /></Button>
-                    <Button variant="icon" delete onClick={() => setConfirmDelete(p)} title="Delete"><Trash2 /></Button>
-                  </td>
-                </tr>
-              )
-            }}
-            emptyState={
-              <EmptyState
-                icon={Package}
-                message="No products yet. Add one here — opening stock is optional, so you can create the SKU now and receive units when your shipment arrives."
-              />
-            }
-          />
-        )}
-
-        {/* ---- Margin Tab ---- */}
-        {activeTab === 'margin' && (
-          <>
-            <div style={{
-              display: 'flex', gap: 24, padding: '12px 16px',
-              background: 'var(--bg-secondary)', borderRadius: 'var(--radius-md)',
-              marginBottom: 16, fontSize: 13, flexWrap: 'wrap',
-            }}>
-              <div>
-                <span style={{ color: 'var(--text-secondary)' }}>Total Stock Value: </span>
-                <strong>{formatMYR(totalStockValue)}</strong>
-              </div>
-              <div>
-                <span style={{ color: 'var(--text-secondary)' }}>Margin set: </span>
-                <strong>{marginData.filter(d => d.targetMarginPct !== null).length} / {marginData.length} SKUs</strong>
-              </div>
-            </div>
-
-            <DataTable
-              columns={MARGIN_COLUMNS}
-              data={marginData}
-              renderRow={row => {
-                const { stock, cost, stockValue, targetMarginPct, suggestedSellPrice, label } = row
-                const marginColor = targetMarginPct === null
-                  ? 'var(--text-muted)'
-                  : targetMarginPct >= 30 ? '#16a34a'
-                  : targetMarginPct >= 10 ? '#f59e0b'
-                  : '#dc2626'
-                return (
-                  <tr key={row.key}>
+                <Fragment key={p.id}>
+                  {/* Parent row */}
+                  <tr style={{ background: 'var(--bg-secondary)' }}>
                     <td>
-                      <strong>{row.variation ? row.product.name : row.product.name}</strong>
-                      {row.variation && (
-                        <><br /><span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{getVariationLabel(row.variation)}</span></>
-                      )}
-                    </td>
-                    <td>{stock}</td>
-                    <td>{formatMYR(cost)}</td>
-                    <td>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                        <input
-                          type="number"
-                          step="1"
-                          min="0"
-                          max="99"
-                          placeholder="e.g. 30"
-                          value={targetMarginPct !== null ? targetMarginPct : ''}
-                          onChange={e => handleTargetMargin(row, e.target.value)}
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <button
+                          onClick={() => toggleExpand(p.id)}
                           style={{
-                            width: 70, padding: '3px 6px', fontSize: 13,
-                            border: `1px solid ${targetMarginPct !== null ? marginColor : 'var(--border-color)'}`,
-                            borderRadius: 'var(--radius-sm)',
-                            background: 'var(--bg-primary)',
-                            color: targetMarginPct !== null ? marginColor : 'var(--text-primary)',
-                            fontWeight: targetMarginPct !== null ? 600 : 400,
+                            background: 'none', border: '1px solid var(--border-color)',
+                            borderRadius: 4, cursor: 'pointer', padding: '1px 6px',
+                            fontSize: 11, color: 'var(--text-secondary)', lineHeight: 1.4,
+                            display: 'inline-flex', alignItems: 'center',
                           }}
-                        />
-                        <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>%</span>
+                          title={isExpanded ? 'Collapse variations' : 'Expand variations'}
+                        >
+                          {isExpanded
+                            ? <ChevronUp size={14} />
+                            : <ChevronDown size={14} />}
+                        </button>
+                        <div>
+                          <strong>{p.name}</strong>
+                          {isOut && <StockBadge tone="out" label="Out of stock" />}
+                          {isLow && <StockBadge tone="low" label="Low stock" />}
+                          <br />
+                          <span style={{ fontSize: 11, color: 'var(--accent-text)', fontWeight: 600 }}>
+                            {p.variations.length} variation{p.variations.length !== 1 ? 's' : ''}
+                            {' · '}
+                            {p.tier1?.name}{p.tier2 ? ` × ${p.tier2.name}` : ''}
+                          </span>
+                          {p.sku && (
+                            <><br /><span style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'monospace' }}>{p.sku}</span></>
+                          )}
+                          {p.link && (
+                            <>
+                              <br />
+                              <a href={p.link} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: 'var(--accent-text)' }}>
+                                View link <ExternalLink className="icon-sm" />
+                              </a>
+                            </>
+                          )}
+                        </div>
                       </div>
                     </td>
-                    <td>
-                      {suggestedSellPrice !== null
-                        ? <strong style={{ color: 'var(--accent-text)', fontSize: 15 }}>{formatMYR(suggestedSellPrice)}</strong>
-                        : <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>enter margin %</span>
-                      }
+                    <td><strong>{totalStock}</strong></td>
+                    <td style={{ color: 'var(--text-muted)', fontSize: 12 }}>
+                      per variation <ChevronDown className="icon-sm" />
                     </td>
-                    <td>{formatMYR(stockValue)}</td>
+                    <td>—</td>
+                    <td>
+                      <Button variant="icon" onClick={() => openEdit(p)} title="Edit"><Pencil /></Button>
+                      <Button variant="icon" delete onClick={() => setConfirmDelete(p)} title="Delete"><Trash2 /></Button>
+                    </td>
                   </tr>
-                )
-              }}
-              emptyState={<EmptyState icon={ChartColumn} message="No products to analyse." />}
+
+                  {/* Variation rows */}
+                  {isExpanded && p.variations.map(v => {
+                    const vStock = calculateVariationStock(v)
+                    const vCost = calculateVariationCostPerUnit(v, state.shipments)
+                    const vOut = vStock <= 0
+                    const vLow = !vOut && vStock <= LOW_STOCK
+                    return (
+                      <tr key={v.id} style={{ background: 'var(--bg-primary)' }}>
+                        <td style={{ paddingLeft: 48 }}>
+                          <span style={{ color: 'var(--text-secondary)', fontSize: 13 }}>
+                            {getVariationLabel(v)}
+                          </span>
+                          {vOut && <StockBadge tone="out" label="Out" fontSize={11} />}
+                          {vLow && <StockBadge tone="low" label="Low" fontSize={11} />}
+                          {v.sku && (
+                            <><br /><span style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'monospace' }}>{v.sku}</span></>
+                          )}
+                        </td>
+                        <td>{vStock}</td>
+                        <td>{formatMYR(vCost)}</td>
+                        <td>{v.batches?.length ?? 0}</td>
+                        <td>
+                          <Button
+                            variant="icon"
+                            onClick={() => setRestockTarget({ productId: p.id, variationId: v.id })}
+                            title="Restock"
+                          >
+                            <PackagePlus />
+                          </Button>
+                          <Button
+                            variant="icon"
+                            delete
+                            onClick={() => handleDeleteVariation(p, v)}
+                            title="Delete variation"
+                          >
+                            <Trash2 />
+                          </Button>
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </Fragment>
+              )
+            }
+
+            // Non-variation product
+            const stock = calculateStock(p, state.sales)
+            const cost = calculateFIFOCostPerUnit(p, state.shipments)
+            const isOut = stock <= 0
+            const isLow = !isOut && stock <= LOW_STOCK
+            return (
+              <tr key={p.id}>
+                <td>
+                  <strong>{p.name}</strong>
+                  {isOut && <StockBadge tone="out" label="Out of stock" />}
+                  {isLow && <StockBadge tone="low" label="Low stock" />}
+                  {p.sku && (
+                    <><br /><span style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'monospace' }}>{p.sku}</span></>
+                  )}
+                  {p.link && (
+                    <>
+                      <br />
+                      <a href={p.link} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: 'var(--accent-text)' }}>
+                        View link <ExternalLink className="icon-sm" />
+                      </a>
+                    </>
+                  )}
+                </td>
+                <td>{stock}</td>
+                <td>{formatMYR(cost)}</td>
+                <td>{p.batches?.length ?? 0}</td>
+                <td>
+                  <Button variant="icon" onClick={() => openEdit(p)} title="Edit"><Pencil /></Button>
+                  <Button variant="icon" onClick={() => setRestockTarget({ productId: p.id })} title="Restock"><PackagePlus /></Button>
+                  <Button variant="icon" delete onClick={() => setConfirmDelete(p)} title="Delete"><Trash2 /></Button>
+                </td>
+              </tr>
+            )
+          }}
+          emptyState={
+            <EmptyState
+              icon={Package}
+              message="No products yet. Add one here — opening stock is optional, so you can create the SKU now and receive units when your shipment arrives."
             />
-          </>
-        )}
+          }
+        />
       </div>
 
       {/* ===== ADD PRODUCT FORM ===== */}
