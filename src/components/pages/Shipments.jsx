@@ -489,6 +489,7 @@ export default function Shipments() {
                 {receiving?.lines.map(l => {
                   const order = state.orders.find(o => o.id === l.orderId)
                   const item = order?.items?.find(i => i.id === l.itemId)
+                  const { product, variation } = item ? resolveLineProduct(item) : {}
                   const previewLine = receivePreview?.lines.find(x => x.id === l.id)
                   const landed = previewLine
                     ? calculateLandedCostPerUnit(previewLine, receivePreview, state.orders)
@@ -496,7 +497,14 @@ export default function Shipments() {
                   const short = (parseFloat(received[l.id]) || 0) < l.qty
                   return (
                     <tr key={l.id}>
-                      <td>{item?.name || 'Unknown'}</td>
+                      <td>
+                        {product?.name || item?.name || 'Unknown'}
+                        {variation && (
+                          <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>
+                            {' '}({getVariationLabel(variation)})
+                          </span>
+                        )}
+                      </td>
                       <td>{l.qty}</td>
                       <td>
                         <input
