@@ -114,7 +114,9 @@ export default function Shipments() {
   const availableLines = useMemo(() => {
     const rows = []
     state.orders
-      .filter(o => o.status === 'at_warehouse')
+      // Stocked-in orders are here too: they hold no free units, but editing
+      // the box that stocked them in has to offer their lines back.
+      .filter(o => o.status === 'at_warehouse' || o.status === 'stocked_in')
       .sort((a, b) => new Date(a.date) - new Date(b.date))
       .forEach(order => {
         ;(order.items || []).forEach(item => {

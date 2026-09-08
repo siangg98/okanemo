@@ -961,6 +961,45 @@ export function isOrderFullyShipped(order, shipments = []) {
 }
 
 /**
+ * True once every unit an order bought has landed and become stock: nothing
+ * left free to consolidate, and every shipment carrying one of its lines has
+ * arrived.
+ *
+ * A short receipt still counts. Ten units shipped and six unpacked leaves four
+ * that can never be consolidated again — the order is finished either way, and
+ * the missing four are already priced into the six by landed cost.
+ */
+export function isOrderStockedIn(order, shipments = []) {
+  if (!order.items || order.items.length === 0) return false
+  if (!isOrderFullyShipped(order, shipments)) return false
+  const carrying = shipments.filter(s =>
+    (s.lines || []).some(l => l.orderId === order.id)
+  )
+  return carrying.length > 0 && carrying.every(s => s.status === 'arrived')
+}
+
+/**
+ * Replay every order's stocked-in flag against the shipments as they now
+ * stand. Derived rather than patched at the transition, so deleting a shipment
+ * or unticking a line walks the order back to `at_warehouse` on its own —
+ * the same self-healing reason `recomputeReloadDraws` replays the wallet.
+ *
+ * Only ever moves an order between `at_warehouse` and `stocked_in`. `ordered`
+ * has not reached the warehouse and `cancelled` is a decision, not a position.
+ */
+export function syncOrderStockStatuses(orders = [], shipments = []) {
+  let changed = false
+  const next = orders.map(o => {
+    if (o.status !== 'at_warehouse' && o.status !== 'stocked_in') return o
+    const status = isOrderStockedIn(o, shipments) ? 'stocked_in' : 'at_warehouse'
+    if (status === o.status) return o
+    changed = true
+    return { ...o, status }
+  })
+  return changed ? next : orders
+}
+
+/**
  * Legacy shipments predate consolidation and carry supplierGroups instead of
  * lines. They still render and still cost correctly, but the new UI treats
  * them as read-only history.
