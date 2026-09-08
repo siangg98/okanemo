@@ -16,6 +16,10 @@ import {
 import { useApp } from '../../hooks/useApp'
 import {
   generateId,
+  generateSKU,
+  makeVariationSKU,
+  splitTierValues,
+  generateVariationCombinations,
   formatMYR,
   formatDate,
   formatForeign,
@@ -44,8 +48,49 @@ const today = () => new Date().toISOString().split('T')[0]
 /** Sentinel option value that opens the inline quick-create on a line. */
 const NEW_PRODUCT = '__new__'
 
+/**
+ * The variation setup a quick-create line carries while it is being filled in.
+ * Mirrors Inventory's Add Product form, because a second tier is the one thing
+ * that cannot be added to a product after the fact.
+ */
+const inlineFieldStyle = {
+  fontSize: 13,
+  padding: '4px 8px',
+  borderRadius: 'var(--radius-sm)',
+  border: '1px solid var(--border-color)',
+  background: 'var(--bg-primary)',
+  color: 'var(--text-primary)',
+}
+
+/** "Black, White, Red" — truncated, since a two-tier set runs long fast. */
+function summariseVariations(variations) {
+  const labels = variations.map(getVariationLabel)
+  return labels.length > 6
+    ? `${labels.slice(0, 6).join(', ')}, +${labels.length - 6} more`
+    : labels.join(', ')
+}
+
+function emptyVariationDraft() {
+  return {
+    varEnabled: false,
+    tier1Name: 'Colour',
+    tier1Values: '',
+    tier2Name: 'Size',
+    tier2Values: '',
+  }
+}
+
 function newItem() {
-  return { _id: generateId(), productId: '', name: '', variationId: '', qty: '', unitPrice: '', creating: false }
+  return {
+    _id: generateId(),
+    productId: '',
+    name: '',
+    variationId: '',
+    qty: '',
+    unitPrice: '',
+    creating: false,
+    ...emptyVariationDraft(),
+  }
 }
 
 const ORDER_COLUMNS = [
@@ -116,6 +161,7 @@ function parsePastedItems(text, products = []) {
         qty: String(qty),
         unitPrice: String(unitPrice),
         creating: !match,
+        ...emptyVariationDraft(),
       }
     })
     .filter(Boolean)
@@ -241,11 +287,53 @@ export default function Orders() {
 
   function selectProduct(id, value) {
     if (value === NEW_PRODUCT) {
-      patchItem(id, { creating: true, productId: '', name: '', variationId: '' })
+      patchItem(id, {
+        creating: true,
+        productId: '',
+        name: '',
+        variationId: '',
+        ...emptyVariationDraft(),
+      })
       return
     }
     const product = state.products.find(p => p.id === value)
     patchItem(id, { productId: value, name: product?.name || '', variationId: '' })
+  }
+
+  /**
+   * Enter inside a quick-create field must not submit the whole order — it
+   * means "create this product", the same as the name field's Enter does.
+   */
+  function stopEnter(e, item) {
+    if (e.key !== 'Enter') return
+    e.preventDefault()
+    createProductForItem(item._id, item.name)
+  }
+
+  /** The SKU the product head would get, which its variation SKUs hang off. */
+  function draftBaseSku(name) {
+    return generateSKU(name.trim(), state.products.map(p => p.sku))
+  }
+
+  /**
+   * The variations a quick-create line would produce, given what is typed into
+   * its draft so far. Empty whenever the line is not making a variation
+   * product — the SKUs are only settled here so the preview and the dispatch
+   * cannot disagree.
+   */
+  function draftVariations(item) {
+    if (!item?.varEnabled) return []
+    const t1 = splitTierValues(item.tier1Values)
+    if (t1.length === 0) return []
+    const t2 = splitTierValues(item.tier2Values)
+    const baseSku = draftBaseSku(item.name)
+    return generateVariationCombinations(t1, t2).map(combo => ({
+      id: generateId(),
+      tier1Value: combo.tier1Value,
+      tier2Value: combo.tier2Value,
+      sku: makeVariationSKU(baseSku, combo.tier1Value, combo.tier2Value),
+      batches: [],
+    }))
   }
 
   /**
@@ -257,18 +345,50 @@ export default function Orders() {
     const name = rawName.trim()
     if (!name) return
 
-    // Typing a name that already exists should reuse it, not make a twin.
+    // Typing a name that already exists should reuse it, not make a twin. The
+    // variation draft is dropped with it: the existing product's own
+    // variations are what this line has to choose from.
     const existing = state.products.find(
       p => (p.name || '').toLowerCase().trim() === name.toLowerCase()
     )
     if (existing) {
-      patchItem(id, { productId: existing.id, name: existing.name, creating: false })
+      patchItem(id, {
+        productId: existing.id,
+        name: existing.name,
+        creating: false,
+        ...emptyVariationDraft(),
+      })
       return
     }
 
+    const item = form.items.find(i => i._id === id)
+    const variations = draftVariations(item)
+    // Asking for variations and naming none would quietly create a plain
+    // product — and a second tier can never be added later, so refuse instead.
+    if (item?.varEnabled && variations.length === 0) return
+
     const productId = generateId()
-    dispatch({ type: 'ADD_PRODUCT', payload: { id: productId, name, link: '', batches: [] } })
-    patchItem(id, { productId, name, creating: false })
+    dispatch({
+      type: 'ADD_PRODUCT',
+      payload: {
+        id: productId,
+        name,
+        link: '',
+        batches: [],
+        ...(variations.length > 0
+          ? {
+              sku: draftBaseSku(name),
+              hasVariations: true,
+              tier1: { name: item.tier1Name.trim() || 'Colour' },
+              tier2: splitTierValues(item.tier2Values).length > 0
+                ? { name: item.tier2Name.trim() || 'Size' }
+                : null,
+              variations,
+            }
+          : {}),
+      },
+    })
+    patchItem(id, { productId, name, creating: false, ...emptyVariationDraft() })
   }
 
   function applyPaste() {
@@ -617,6 +737,8 @@ export default function Orders() {
                   : null
                 const matchedProduct =
                   product?.hasVariations && product.variations?.length > 0 ? product : null
+                const draftPreview =
+                  item.creating && item.varEnabled ? draftVariations(item) : []
                 return (
                   <div key={item._id} style={{ marginBottom: 8 }}>
                     <div className="calc-row">
@@ -627,12 +749,7 @@ export default function Orders() {
                           placeholder="New product name"
                           value={item.name}
                           onChange={e => updateItem(item._id, 'name', e.target.value)}
-                          onKeyDown={e => {
-                            if (e.key === 'Enter') {
-                              e.preventDefault()
-                              createProductForItem(item._id, item.name)
-                            }
-                          }}
+                          onKeyDown={e => stopEnter(e, item)}
                         />
                       ) : (
                         <select
@@ -671,26 +788,98 @@ export default function Orders() {
                     {item.creating && (
                       <div style={{
                         paddingLeft: 8, marginTop: 4,
-                        display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap',
+                        display: 'flex', flexDirection: 'column', gap: 6,
                       }}>
-                        <Button
-                          variant="secondary"
-                          type="button"
-                          disabled={!item.name.trim()}
-                          onClick={() => createProductForItem(item._id, item.name)}
-                        >
-                          Create {item.name.trim() ? `“${item.name.trim()}”` : 'product'}
-                        </Button>
-                        <Button
-                          variant="secondary"
-                          type="button"
-                          onClick={() => patchItem(item._id, { creating: false, name: '' })}
-                        >
-                          Cancel
-                        </Button>
-                        <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                          Added to Inventory at zero stock — this order fills it on arrival.
-                        </span>
+                        <div style={{
+                          display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap',
+                        }}>
+                          <Button
+                            variant="secondary"
+                            type="button"
+                            disabled={!item.name.trim() || (item.varEnabled && draftPreview.length === 0)}
+                            onClick={() => createProductForItem(item._id, item.name)}
+                          >
+                            Create {item.name.trim() ? `“${item.name.trim()}”` : 'product'}
+                          </Button>
+                          <Button
+                            variant="secondary"
+                            type="button"
+                            onClick={() =>
+                              patchItem(item._id, {
+                                creating: false,
+                                name: '',
+                                ...emptyVariationDraft(),
+                              })
+                            }
+                          >
+                            Cancel
+                          </Button>
+                          <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                            Added to Inventory at zero stock — this order fills it on arrival.
+                          </span>
+                        </div>
+                        <label style={{
+                          display: 'flex', gap: 6, alignItems: 'center', fontSize: 12,
+                        }}>
+                          <input
+                            type="checkbox"
+                            checked={item.varEnabled}
+                            onChange={e => updateItem(item._id, 'varEnabled', e.target.checked)}
+                          />
+                          This product has variations
+                        </label>
+                        {item.varEnabled && (
+                          <div style={{
+                            display: 'flex', flexDirection: 'column', gap: 6, paddingLeft: 20,
+                          }}>
+                            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                              <input
+                                type="text"
+                                placeholder="Tier 1 name"
+                                value={item.tier1Name}
+                                onChange={e => updateItem(item._id, 'tier1Name', e.target.value)}
+                                onKeyDown={e => stopEnter(e, item)}
+                                style={{ ...inlineFieldStyle, width: 110 }}
+                              />
+                              <input
+                                type="text"
+                                placeholder="Values, e.g. Black, White, Red"
+                                value={item.tier1Values}
+                                onChange={e => updateItem(item._id, 'tier1Values', e.target.value)}
+                                onKeyDown={e => stopEnter(e, item)}
+                                style={{ ...inlineFieldStyle, flex: 1, minWidth: 200 }}
+                              />
+                            </div>
+                            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                              <input
+                                type="text"
+                                placeholder="Tier 2 name"
+                                value={item.tier2Name}
+                                onChange={e => updateItem(item._id, 'tier2Name', e.target.value)}
+                                onKeyDown={e => stopEnter(e, item)}
+                                style={{ ...inlineFieldStyle, width: 110 }}
+                              />
+                              <input
+                                type="text"
+                                placeholder="Values (optional), e.g. S, M, L"
+                                value={item.tier2Values}
+                                onChange={e => updateItem(item._id, 'tier2Values', e.target.value)}
+                                onKeyDown={e => stopEnter(e, item)}
+                                style={{ ...inlineFieldStyle, flex: 1, minWidth: 200 }}
+                              />
+                            </div>
+                            <span style={{
+                              fontSize: 12,
+                              color: draftPreview.length > 0
+                                ? 'var(--text-muted)'
+                                : 'var(--danger-text)',
+                            }}>
+                              {draftPreview.length > 0
+                                ? `→ ${draftPreview.length} variation${draftPreview.length === 1 ? '' : 's'}: ${summariseVariations(draftPreview)}`
+                                : 'Enter at least one Tier 1 value.'}
+                            </span>
+                          </div>
+                        )}
                       </div>
                     )}
                     {!item.creating && !item.productId && item.name.trim() && (

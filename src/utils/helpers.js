@@ -10,6 +10,34 @@ export function getVariationLabel(variation) {
 }
 
 /**
+ * Splits a comma-separated tier-values field into clean values,
+ * e.g. "Red, Blue,  " -> ["Red", "Blue"].
+ */
+export function splitTierValues(str) {
+  return (str || '')
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean)
+}
+
+/**
+ * Cartesian product of the two tiers. A product with no second tier still gets
+ * one variation per tier-1 value, with a null tier2Value.
+ */
+export function generateVariationCombinations(tier1Values, tier2Values) {
+  if (tier2Values.length === 0) {
+    return tier1Values.map(t1 => ({ tier1Value: t1, tier2Value: null }))
+  }
+  const combos = []
+  tier1Values.forEach(t1 => {
+    tier2Values.forEach(t2 => {
+      combos.push({ tier1Value: t1, tier2Value: t2 })
+    })
+  })
+  return combos
+}
+
+/**
  * Finds a specific variation on a product by its id.
  */
 export function getVariation(product, variationId) {
