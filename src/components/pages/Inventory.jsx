@@ -11,7 +11,13 @@ import {
   ArrowLeft,
 } from 'lucide-react'
 import { useApp } from '../../hooks/useApp'
-import { generateId, generateSKU, makeVariationSKU } from '../../utils/helpers'
+import {
+  generateId,
+  generateSKU,
+  makeVariationSKU,
+  splitTierValues,
+  generateVariationCombinations,
+} from '../../utils/helpers'
 import {
   formatMYR,
   calculateStock,
@@ -62,28 +68,6 @@ const INVENTORY_COLUMNS = [
   { label: 'Batches' },
   { label: 'Actions' },
 ]
-
-// ===== Split comma-separated values =====
-function splitValues(str) {
-  return str
-    .split(',')
-    .map(s => s.trim())
-    .filter(Boolean)
-}
-
-// ===== Generate cartesian product of tier values =====
-function generateCombinations(tier1Values, tier2Values) {
-  if (tier2Values.length === 0) {
-    return tier1Values.map(t1 => ({ tier1Value: t1, tier2Value: null }))
-  }
-  const combos = []
-  tier1Values.forEach(t1 => {
-    tier2Values.forEach(t2 => {
-      combos.push({ tier1Value: t1, tier2Value: t2 })
-    })
-  })
-  return combos
-}
 
 const emptyAddForm = {
   name: '',
@@ -150,11 +134,11 @@ export default function Inventory() {
   // ===== Computed variation preview for add form =====
   const variationPreview = useMemo(() => {
     if (!addForm.hasVariations) return []
-    const t1 = splitValues(addForm.tier1Values)
-    const t2 = splitValues(addForm.tier2Values)
+    const t1 = splitTierValues(addForm.tier1Values)
+    const t2 = splitTierValues(addForm.tier2Values)
     if (t1.length === 0) return []
     const baseSku = addForm.sku.trim() || generateSKU(addForm.name.trim(), state.products.map(p => p.sku))
-    return generateCombinations(t1, t2).map(combo => ({
+    return generateVariationCombinations(t1, t2).map(combo => ({
       ...combo,
       sku: makeVariationSKU(baseSku, combo.tier1Value, combo.tier2Value),
       id: generateId(),
@@ -166,11 +150,11 @@ export default function Inventory() {
     const baseSku = addForm.sku.trim() || generateSKU(addForm.name.trim(), state.products.map(p => p.sku))
 
     if (addForm.hasVariations) {
-      const t1Values = splitValues(addForm.tier1Values)
-      const t2Values = splitValues(addForm.tier2Values)
+      const t1Values = splitTierValues(addForm.tier1Values)
+      const t2Values = splitTierValues(addForm.tier2Values)
       if (t1Values.length === 0) return
 
-      const variations = generateCombinations(t1Values, t2Values).map(combo => ({
+      const variations = generateVariationCombinations(t1Values, t2Values).map(combo => ({
         id: generateId(),
         tier1Value: combo.tier1Value,
         tier2Value: combo.tier2Value,
