@@ -14,8 +14,14 @@ export const STORAGE_KEYS = {
 export const ORDER_STATUS = {
   ordered: 'Ordered',
   at_warehouse: 'At Warehouse',
+  stocked_in: 'Stocked In',
   cancelled: 'Cancelled',
 }
+
+// `stocked_in` is derived, never picked by hand: an order reaches it once every
+// unit it bought has landed in a shipment and become stock. The reducer keeps
+// it in step, so the edit form does not offer it.
+export const DERIVED_ORDER_STATUSES = ['stocked_in']
 
 // Consolidated shipment lifecycle. Stock is created on the move to `arrived`.
 export const SHIPMENT_STATUS = {

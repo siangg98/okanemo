@@ -36,7 +36,7 @@ import {
   drawFromReloads,
   restoreToReloads,
 } from '../../utils/helpers'
-import { ORDER_STATUS } from '../../utils/constants'
+import { ORDER_STATUS, DERIVED_ORDER_STATUSES } from '../../utils/constants'
 import EmptyState from '../shared/EmptyState'
 import ConfirmModal from '../shared/ConfirmModal'
 import Button from '../shared/Button'
@@ -107,6 +107,7 @@ const ORDER_COLUMNS = [
 const STATUS_STYLES = {
   ordered: { background: 'var(--bg-tertiary)', color: 'var(--text-secondary)' },
   at_warehouse: { background: 'var(--accent-bg)', color: 'var(--accent-text)' },
+  stocked_in: { background: 'var(--success-bg)', color: 'var(--success-text)' },
   cancelled: { background: 'var(--danger-bg)', color: 'var(--danger-strong)' },
 }
 
@@ -668,11 +669,27 @@ export default function Orders() {
                 ))}
               </select>
             </FormGroup>
-            <FormGroup label="Status" required>
+            <FormGroup
+              label="Status"
+              required
+              hint={
+                DERIVED_ORDER_STATUSES.includes(form.status)
+                  ? 'Set automatically — every unit has landed. Picking another status here sticks only until the next shipment change.'
+                  : undefined
+              }
+            >
               <select value={form.status} onChange={e => set('status', e.target.value)}>
-                {Object.entries(ORDER_STATUS).map(([key, label]) => (
-                  <option key={key} value={key}>{label}</option>
-                ))}
+                {Object.entries(ORDER_STATUS)
+                  // A derived status is the reducer's to set, so it is offered
+                  // only when the order already sits at one — dropping it would
+                  // blank the field and silently retag the order on save.
+                  .filter(
+                    ([key]) =>
+                      !DERIVED_ORDER_STATUSES.includes(key) || key === form.status
+                  )
+                  .map(([key, label]) => (
+                    <option key={key} value={key}>{label}</option>
+                  ))}
               </select>
             </FormGroup>
           </div>

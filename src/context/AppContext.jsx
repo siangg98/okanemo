@@ -9,6 +9,7 @@ import {
   restoreToBatches,
   restoreToBatchesLegacy,
   recomputeReloadDraws,
+  syncOrderStockStatuses,
   resolveShipmentLine,
   calculateLandedCostPerUnit,
   calculateOrderItemUnitCostMYR,
@@ -172,6 +173,16 @@ function loadInitialState() {
     localStorage.setItem(STORAGE_KEYS.EXPENSES, JSON.stringify(walletResult.expenses))
   }
 
+  // Settle the stocked-in flag on load, for the same reason the wallet is
+  // replayed above: reducer writes keep it right during a session, but data
+  // that predates the status — or a restored backup — arrives without it. This
+  // doubles as the backfill, and being a replay rather than a one-shot
+  // migration it needs no marker flag to stay idempotent.
+  const stockedOrders = syncOrderStockStatuses(walletResult.orders, shipments)
+  if (stockedOrders !== walletResult.orders) {
+    localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(stockedOrders))
+  }
+
   return {
     shipments,
     products,
@@ -180,7 +191,7 @@ function loadInitialState() {
     suppliers,
     expenses: walletResult.expenses,
     reloads: walletResult.reloads,
-    orders: walletResult.orders,
+    orders: stockedOrders,
   }
 }
 
@@ -201,10 +212,24 @@ function persistWallet(state, nextReloads, nextOrders, nextExpenses = state.expe
     nextOrders,
     nextExpenses
   )
+  // Editing an order's quantities can settle or unsettle it against the boxes
+  // it is already in, so the stocked-in flag is replayed here too.
+  const staged = syncOrderStockStatuses(orders, state.shipments)
   persist(STORAGE_KEYS.RELOADS, reloads)
-  persist(STORAGE_KEYS.ORDERS, orders)
+  persist(STORAGE_KEYS.ORDERS, staged)
   persist(STORAGE_KEYS.EXPENSES, expenses)
-  return { ...state, reloads, orders, expenses }
+  return { ...state, reloads, orders: staged, expenses }
+}
+
+/**
+ * Shipments moving is the other half: a box arriving stocks its orders in, and
+ * deleting or unpacking one walks them back. Persists the orders slice and
+ * hands it back for the caller to fold into state.
+ */
+function persistOrderStock(orders, shipments) {
+  const synced = syncOrderStockStatuses(orders, shipments)
+  persist(STORAGE_KEYS.ORDERS, synced)
+  return synced
 }
 
 /**
@@ -478,18 +503,20 @@ function appReducer(state, action) {
       const shipment = { ...action.payload, id: generateId() }
       const shipments = [...state.shipments, shipment]
       const expenses = syncFreightExpense(state.expenses, shipment)
+      const orders = persistOrderStock(state.orders, shipments)
       persist(STORAGE_KEYS.SHIPMENTS, shipments)
       persist(STORAGE_KEYS.EXPENSES, expenses)
-      return { ...state, shipments, expenses }
+      return { ...state, shipments, expenses, orders }
     }
     case 'UPDATE_SHIPMENT': {
       const shipments = state.shipments.map(s =>
         s.id === action.payload.id ? action.payload : s
       )
       const expenses = syncFreightExpense(state.expenses, action.payload)
+      const orders = persistOrderStock(state.orders, shipments)
       persist(STORAGE_KEYS.SHIPMENTS, shipments)
       persist(STORAGE_KEYS.EXPENSES, expenses)
-      return { ...state, shipments, expenses }
+      return { ...state, shipments, expenses, orders }
     }
     case 'MARK_SHIPMENT_ARRIVED': {
       // payload: { id, dateArrived, received: { [lineId]: qty } }
@@ -512,22 +539,26 @@ function appReducer(state, action) {
       const shipments = state.shipments.map(s => (s.id === arrived.id ? arrived : s))
       const products = materializeStock(arrived, state.orders, state.products)
       const expenses = syncFreightExpense(state.expenses, arrived)
+      const orders = persistOrderStock(state.orders, shipments)
 
       persist(STORAGE_KEYS.SHIPMENTS, shipments)
       persist(STORAGE_KEYS.PRODUCTS, products)
       persist(STORAGE_KEYS.EXPENSES, expenses)
-      return { ...state, shipments, products, expenses }
+      return { ...state, shipments, products, expenses, orders }
     }
     case 'DELETE_SHIPMENT': {
       const shipments = state.shipments.filter(s => s.id !== action.payload)
       const expenses = state.expenses.filter(e => e.shipmentId !== action.payload)
+      // Its lines are free to consolidate again, so any order it had stocked in
+      // walks back to the warehouse.
+      const orders = persistOrderStock(state.orders, shipments)
       // Also drop the batches it created — leaving them orphaned would silently
       // fall back to a bare purchase price and understate cost.
       const products = removeBatchesForShipment(state.products, action.payload)
       persist(STORAGE_KEYS.SHIPMENTS, shipments)
       persist(STORAGE_KEYS.EXPENSES, expenses)
       persist(STORAGE_KEYS.PRODUCTS, products)
-      return { ...state, shipments, expenses, products }
+      return { ...state, shipments, expenses, products, orders }
     }
 
     // --- Products ---
