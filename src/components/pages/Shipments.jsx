@@ -8,6 +8,7 @@ import {
   Trash2,
   Ship,
   Inbox,
+  Lock,
   ArrowLeft,
 } from 'lucide-react'
 import { useApp } from '../../hooks/useApp'
@@ -75,6 +76,32 @@ function StatusPill({ status, legacy }) {
   )
 }
 
+/**
+ * A fact frozen on arrival, shown as text rather than a disabled input.
+ *
+ * A disabled field still reads as "a control I ought to be able to use, and
+ * can't" — text states what it is: a number already committed to stock. Styled
+ * to sit exactly where an input would, so the form's rhythm is unchanged.
+ */
+function FrozenValue({ children }) {
+  return (
+    <div
+      style={{
+        padding: '10px 14px',
+        background: 'var(--bg-primary)',
+        border: '1px solid var(--border-color)',
+        borderRadius: 'var(--radius-sm)',
+        fontFamily: 'var(--font-mono)',
+        fontVariantNumeric: 'tabular-nums',
+        fontSize: 14,
+        color: 'var(--text-secondary)',
+      }}
+    >
+      {children}
+    </div>
+  )
+}
+
 function emptyForm() {
   return {
     dateShipped: today(),
@@ -109,6 +136,20 @@ export default function Shipments() {
   }
 
   const payAccounts = state.accounts.filter(a => (a.currency || 'MYR') === 'MYR')
+
+  // The shipment the form is editing, if any. An arrived one is not free to
+  // edit: its batches were built from these lines and had their landed cost
+  // prorated against the whole box, so the form narrows to the two fields
+  // nothing derives from. `handleSubmit` enforces the same thing again, because
+  // not rendering a control is not on its own a guarantee.
+  const editing = useMemo(
+    () => (editId ? state.shipments.find(s => s.id === editId) : null),
+    [editId, state.shipments]
+  )
+  // A legacy shipment carries `supplierGroups` and no `lines`, so it can never
+  // be an "arrived details" edit in the sense this form means.
+  const arrivedEdit = editing?.status === 'arrived' && !!editing.lines
+  const freightAccountName = state.accounts.find(a => a.id === form.accountId)?.name || '—'
 
   /** Order lines still sitting in the warehouse, free to put in this box. */
   const availableLines = useMemo(() => {
@@ -205,30 +246,53 @@ export default function Shipments() {
   const draftUnits = draft.lines.reduce((s, l) => s + l.qty, 0)
   const landedTotal = goodsValue + (parseFloat(form.freightMYR) || 0)
 
+  // What the list column already reports for an arrived box. The picker-derived
+  // figures above are built from `qty`, which for a short shipment is not what
+  // landed — so without these the same shipment would read two different ways.
+  const frozenGoods = arrivedEdit ? calculateShipmentValue(editing, state.orders) : 0
+  const frozenFreight = arrivedEdit ? parseFloat(editing.freightMYR) || 0 : 0
+  const frozenUnits = arrivedEdit
+    ? editing.lines.reduce((n, l) => n + (l.qtyReceived ?? l.qty), 0)
+    : 0
+  const frozenLanded = frozenGoods + frozenFreight
+
   function handleSubmit(e) {
     e.preventDefault()
-    const lines = draft.lines.map(l => ({
-      id: editId ? l.id : generateId(),
-      orderId: l.orderId,
-      itemId: l.itemId,
-      qty: l.qty,
-      qtyReceived: null,
-    }))
+
+    // An arrived shipment's lines are frozen facts: its batches were built from
+    // them and had their landed cost prorated against the whole box, so they are
+    // carried across verbatim rather than rebuilt from the picker. `qtyReceived`
+    // and `dateArrived` come across the same way — this form never sets them, and
+    // nulling them would destroy the record of a short shipment, which is also
+    // the divisor calculateLandedCostPerUnit divides by.
+    const receivedById = new Map((editing?.lines || []).map(l => [l.id, l.qtyReceived ?? null]))
+
+    const lines = arrivedEdit
+      ? editing.lines
+      : draft.lines.map(l => ({
+          id: editId ? l.id : generateId(),
+          orderId: l.orderId,
+          itemId: l.itemId,
+          qty: l.qty,
+          qtyReceived: editId ? receivedById.get(l.id) ?? null : null,
+        }))
 
     const payload = {
       dateShipped: form.dateShipped,
       description: form.description,
       freightMYR: parseFloat(form.freightMYR) || 0,
       accountId: form.accountId || null,
-      status: form.status,
+      // Only the receive flow may set `arrived`. A form value must never walk an
+      // arrived shipment back to draft or shipped: that would free its orders to
+      // be consolidated again while the stock it created still exists.
+      status: arrivedEdit ? 'arrived' : form.status,
       notes: form.notes,
       lines,
-      dateArrived: null,
+      dateArrived: editing?.dateArrived ?? null,
     }
 
     if (editId) {
-      const existing = state.shipments.find(s => s.id === editId)
-      dispatch({ type: 'UPDATE_SHIPMENT', payload: { ...existing, ...payload } })
+      dispatch({ type: 'UPDATE_SHIPMENT', payload: { ...editing, ...payload } })
     } else {
       dispatch({ type: 'ADD_SHIPMENT', payload })
     }
@@ -379,8 +443,18 @@ export default function Shipments() {
                         <PackageCheck />
                       </Button>
                     )}
-                    {!legacy && s.status !== 'arrived' && (
-                      <Button variant="icon" onClick={() => openEdit(s)} title="Edit"><Pencil /></Button>
+                    {!legacy && (
+                      <Button
+                        variant="icon"
+                        onClick={() => openEdit(s)}
+                        title={
+                          s.status === 'arrived'
+                            ? 'Edit details — items, freight and dates are locked'
+                            : 'Edit'
+                        }
+                      >
+                        <Pencil />
+                      </Button>
                     )}
                     <Button variant="icon" delete onClick={() => handleDeleteClick(s)} title="Delete"><Trash2 /></Button>
                   </td>
@@ -537,18 +611,48 @@ export default function Shipments() {
       <div className={`tab-form-view form-large${view === 'form' ? ' active' : ''}`}>
         <div className="form-view-header">
           <Button variant="back" onClick={handleCancel}><ArrowLeft /></Button>
-          <h1>{editId ? 'Edit Shipment' : 'New Consolidation'}</h1>
+          <h1>
+            {arrivedEdit ? 'Edit Shipment Details' : editId ? 'Edit Shipment' : 'New Consolidation'}
+          </h1>
         </div>
         <form onSubmit={handleSubmit}>
+          {arrivedEdit && (
+            <div
+              style={{
+                background: 'var(--warning-bg)',
+                borderRadius: 'var(--radius-md)',
+                padding: '10px 14px',
+                marginBottom: 20,
+                fontSize: 13,
+                color: 'var(--warning-text)',
+                display: 'flex',
+                alignItems: 'flex-start',
+                gap: 8,
+              }}
+            >
+              <Lock className="icon-sm" style={{ marginTop: 2, flexShrink: 0 }} />
+              <span>
+                This box has already arrived, so its items, quantities, freight and dates are
+                frozen into the stock it created. Only the description and notes can change.
+              </span>
+            </div>
+          )}
+
           <div className="form-row">
-            <FormGroup label="Date Shipped" required>
-              <input
-                type="date"
-                value={form.dateShipped}
-                onChange={e => set('dateShipped', e.target.value)}
-                required
-              />
-            </FormGroup>
+            {arrivedEdit ? (
+              <FormGroup label="Date Shipped">
+                <FrozenValue>{formatDate(form.dateShipped)}</FrozenValue>
+              </FormGroup>
+            ) : (
+              <FormGroup label="Date Shipped" required>
+                <input
+                  type="date"
+                  value={form.dateShipped}
+                  onChange={e => set('dateShipped', e.target.value)}
+                  required
+                />
+              </FormGroup>
+            )}
             <FormGroup label="Description" required>
               <input
                 type="text"
@@ -561,38 +665,67 @@ export default function Shipments() {
           </div>
 
           <div className="form-row">
-            <FormGroup
-              label="Freight Cost (RM)"
-              hint="Prorated across every item by value — not split evenly"
-            >
-              <input
-                type="number" step="0.01" min="0" placeholder="0.00"
-                value={form.freightMYR}
-                onChange={e => set('freightMYR', e.target.value)}
-              />
-            </FormGroup>
-            <FormGroup label="Freight Paid From" hint="Posted as an expense once it leaves draft">
-              <select value={form.accountId} onChange={e => set('accountId', e.target.value)}>
-                <option value="">— None —</option>
-                {payAccounts.map(a => (
-                  <option key={a.id} value={a.id}>{a.name}</option>
-                ))}
-              </select>
-            </FormGroup>
+            {arrivedEdit ? (
+              <FormGroup label="Freight Cost (RM)">
+                <FrozenValue>{formatMYR(parseFloat(form.freightMYR) || 0)}</FrozenValue>
+              </FormGroup>
+            ) : (
+              <FormGroup
+                label="Freight Cost (RM)"
+                hint="Prorated across every item by value — not split evenly"
+              >
+                <input
+                  type="number" step="0.01" min="0" placeholder="0.00"
+                  value={form.freightMYR}
+                  onChange={e => set('freightMYR', e.target.value)}
+                />
+              </FormGroup>
+            )}
+            {arrivedEdit ? (
+              <FormGroup label="Freight Paid From">
+                <FrozenValue>{freightAccountName}</FrozenValue>
+              </FormGroup>
+            ) : (
+              <FormGroup
+                label="Freight Paid From"
+                hint="Posted as an expense once it leaves draft"
+              >
+                <select value={form.accountId} onChange={e => set('accountId', e.target.value)}>
+                  <option value="">— None —</option>
+                  {payAccounts.map(a => (
+                    <option key={a.id} value={a.id}>{a.name}</option>
+                  ))}
+                </select>
+              </FormGroup>
+            )}
           </div>
 
-          <FormGroup label="Status" required>
-            <select value={form.status} onChange={e => set('status', e.target.value)}>
-              <option value="draft">Draft — planning, freight not paid</option>
-              <option value="shipped">In Transit — paid and on its way</option>
-            </select>
-          </FormGroup>
+          {arrivedEdit ? (
+            <div className="form-row">
+              <FormGroup label="Status">
+                <FrozenValue>
+                  <StatusPill status="arrived" />
+                </FrozenValue>
+              </FormGroup>
+              <FormGroup label="Arrived">
+                <FrozenValue>{formatDate(editing.dateArrived)}</FrozenValue>
+              </FormGroup>
+            </div>
+          ) : (
+            <FormGroup label="Status" required>
+              <select value={form.status} onChange={e => set('status', e.target.value)}>
+                <option value="draft">Draft — planning, freight not paid</option>
+                <option value="shipped">In Transit — paid and on its way</option>
+              </select>
+            </FormGroup>
+          )}
 
-          {/* Line picker */}
+          {/* Line picker — or, once arrived, the frozen record of what turned up.
+              Both live here so the `calculator-section` chrome is shared. */}
           <div className="calculator-section" style={{ marginTop: 16 }}>
             <div className="calculator-header">
-              <h3>What's in the box</h3>
-              {availableLines.length > 0 && (
+              <h3>{arrivedEdit ? 'What arrived' : "What's in the box"}</h3>
+              {!arrivedEdit && availableLines.length > 0 && (
                 <div style={{ display: 'flex', gap: 8 }}>
                   <Button variant="add-row" type="button" onClick={selectAll}>Select all</Button>
                   <Button variant="add-row" type="button" onClick={() => setSelected({})}>Clear</Button>
@@ -600,7 +733,57 @@ export default function Shipments() {
               )}
             </div>
 
-            {availableLines.length === 0 ? (
+            {arrivedEdit ? (
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Item</th>
+                    <th>Sent</th>
+                    <th>Received</th>
+                    <th>Landed / unit</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {editing.lines.map(l => {
+                    const { order, item } = resolveShipmentLine(l, state.orders)
+                    if (!order || !item) {
+                      return (
+                        <tr key={l.id}>
+                          <td colSpan={4} style={{ color: 'var(--text-muted)', fontSize: 12 }}>
+                            Unknown item (source order line was removed)
+                          </td>
+                        </tr>
+                      )
+                    }
+                    const { product, variation } = resolveLineProduct(item)
+                    const received = l.qtyReceived ?? l.qty
+                    const short = received < l.qty
+                    return (
+                      <tr key={l.id}>
+                        <td>
+                          {product?.name || item.name}
+                          {variation && (
+                            <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>
+                              {' '}({getVariationLabel(variation)})
+                            </span>
+                          )}
+                        </td>
+                        <td>{l.qty}</td>
+                        <td>
+                          {received}
+                          {short && (
+                            <div style={{ fontSize: 11, color: 'var(--danger-strong)' }}>
+                              {l.qty - received} short
+                            </div>
+                          )}
+                        </td>
+                        <td>{formatMYR(calculateLandedCostPerUnit(l, editing, state.orders))}</td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            ) : availableLines.length === 0 ? (
               <EmptyState
                 icon={Inbox}
                 message="Nothing at the warehouse. Mark an order 'At Warehouse' on the Orders page first."
@@ -700,16 +883,20 @@ export default function Shipments() {
             }}
           >
             <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-              <span style={{ color: 'var(--text-secondary)' }}>Units in box</span>
-              <span>{draftUnits}</span>
+              <span style={{ color: 'var(--text-secondary)' }}>
+                {arrivedEdit ? 'Units received' : 'Units in box'}
+              </span>
+              <span>{arrivedEdit ? frozenUnits : draftUnits}</span>
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between' }}>
               <span style={{ color: 'var(--text-secondary)' }}>Goods value</span>
-              <span>{formatMYR(goodsValue)}</span>
+              <span>{formatMYR(arrivedEdit ? frozenGoods : goodsValue)}</span>
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between' }}>
               <span style={{ color: 'var(--text-secondary)' }}>Freight</span>
-              <span>+ {formatMYR(parseFloat(form.freightMYR) || 0)}</span>
+              <span>
+                +&nbsp;{formatMYR(arrivedEdit ? frozenFreight : parseFloat(form.freightMYR) || 0)}
+              </span>
             </div>
             <div
               style={{
@@ -721,13 +908,22 @@ export default function Shipments() {
               }}
             >
               <span>Landed total</span>
-              <strong style={{ color: 'var(--accent-text)' }}>{formatMYR(landedTotal)}</strong>
+              <strong style={{ color: 'var(--accent-text)' }}>
+                {formatMYR(arrivedEdit ? frozenLanded : landedTotal)}
+              </strong>
             </div>
-            {goodsValue > 0 && (
+            {arrivedEdit ? (
               <div style={{ color: 'var(--text-muted)', fontSize: 12 }}>
-                Freight adds {((parseFloat(form.freightMYR) || 0) / goodsValue * 100).toFixed(1)}% to
-                every item's cost.
+                What this stock cost when it landed. Freight was prorated across the box at that
+                moment and is frozen into every unit.
               </div>
+            ) : (
+              goodsValue > 0 && (
+                <div style={{ color: 'var(--text-muted)', fontSize: 12 }}>
+                  Freight adds {((parseFloat(form.freightMYR) || 0) / goodsValue * 100).toFixed(1)}%
+                  to every item's cost.
+                </div>
+              )
             )}
           </div>
 
@@ -741,7 +937,13 @@ export default function Shipments() {
           </FormGroup>
 
           <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-            <Button variant="primary" type="submit" disabled={draft.lines.length === 0}>
+            {/* An arrived box keeps its lines whatever the picker computes, so a
+                source order that has since been deleted must not block the save. */}
+            <Button
+              variant="primary"
+              type="submit"
+              disabled={!arrivedEdit && draft.lines.length === 0}
+            >
               {editId ? 'Save Changes' : 'Create Shipment'}
             </Button>
             <Button variant="secondary" type="button" onClick={handleCancel}>Cancel</Button>
