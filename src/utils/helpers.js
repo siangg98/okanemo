@@ -83,8 +83,10 @@ export function generateId() {
 // identical products apart, so they are the last thing that may be clipped.
 // Clipping the concatenation instead turned "SKTC A07 PCIe 3.0 Mini ITX Case"
 // and its 4.0 sibling into one SKTCA07P-CASE, and the collision suffix then had
-// to carry the whole distinction. A name with no digits in it comes out exactly
-// as the old flat eight-character clip produced it: SPACESAG.
+// to carry the whole distinction. Only whole words fill the budget, so a name
+// with no digits comes out as the flat clip left it only while its head fits:
+// "Kitchen Storage Organizer Rack" is KITCHEN-RACK, where the clip gave
+// KITCHENS-RACK, and "Phone Holder" is PHONE-HOLDER either way.
 function skuSegment(words) {
   let budget = 8
   let spent = false
@@ -188,6 +190,15 @@ export function findVariationSKUConflicts(
   return conflicts
 }
 
+// Is this a SKU the base would have produced? Only then is it the product's to
+// derive. Anything else was typed in from outside — VENDOR-XYZ-9981 — or carried
+// over from a base that no longer exists, and is not this product's to rename.
+// The line three places draw: the rebuild skip below, the migration that flags
+// the strays `skuCustom`, and migrateVariationSKUs.
+export function isDerivedSKU(sku, base) {
+  return !!sku && !!base && sku.startsWith(`${base}-`)
+}
+
 // Variation SKUs hang off the product's: SPACESAG-CASE-BLACK, and
 // SPACESAG-CASE-BLACK-XL once a second tier is in play. Unlike the product
 // head, the tier values are not truncated — they are the part a person reads
@@ -211,17 +222,19 @@ export function makeVariationSKU(productSku, tier1Value, tier2Value) {
 // swapped: the prefix test has to read what the variations still carry, not
 // what the product is becoming. Without it a SKU typed in from outside is
 // rewritten into this product's name — VENDOR-XYZ-9981 on a SPACE-BAG product
-// came out SPACE-BAG-BLACK. It is the same prefix test migrateVariationSKUs
-// makes, and it has to be made here too: that migration never gets to see a
-// variation this one has already rewritten. A variation with no SKU at all is
-// still given one, since it cannot be foreign — nobody typed it.
+// came out SPACE-BAG-BLACK. It is the same test migrateVariationSKUs makes
+// (`isDerivedSKU`), and it has to be made here too: that migration never gets
+// to see a variation this one has already rewritten. A variation with no SKU at
+// all is still given one, since it cannot be foreign — nobody typed it.
 export function rebuildVariationSKUs(product, renamedFrom = null) {
   if (!product?.hasVariations || !Array.isArray(product.variations)) return product
   return {
     ...product,
     variations: product.variations.map(v => {
       if (v.skuCustom) return v
-      if (renamedFrom && v.sku && !v.sku.startsWith(`${renamedFrom}-`)) return v
+      // Only a SKU that is actually there can be foreign: a variation with no
+      // SKU of its own falls through and is given one below.
+      if (renamedFrom && v.sku && !isDerivedSKU(v.sku, renamedFrom)) return v
       return { ...v, sku: makeVariationSKU(product.sku, v.tier1Value, v.tier2Value) }
     }),
   }
