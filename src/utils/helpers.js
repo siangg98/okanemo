@@ -1115,6 +1115,37 @@ export function isOrderStockedIn(order, shipments = []) {
 }
 
 /**
+ * Whether any of an order's units have already landed as stock.
+ *
+ * The durable form of "this order has arrived". `status` is not durable enough
+ * to key a lock off: the edit form can move an order off `stocked_in` by hand,
+ * and `syncOrderStockStatuses` only ever touches `at_warehouse` / `stocked_in`,
+ * so a hand-set `ordered` sticks and would lift the lock. A shipment that
+ * carried this order's lines and has since arrived cannot be edited away — and a
+ * batch naming the order is the stronger version of the same fact, since only
+ * arrival creates batches.
+ *
+ * The Orders form freezes an order's line prices, overheads and wallet once this
+ * is true. Those are what `materializeStock` costed the batches from, so letting
+ * them move afterwards would drift the order's cost away from the stock's.
+ */
+export function orderHasLandedStock(order, shipments = [], products = []) {
+  if (!order?.id) return false
+
+  const carriedByArrived = shipments.some(
+    s => s.status === 'arrived' && (s.lines || []).some(l => l.orderId === order.id)
+  )
+  if (carriedByArrived) return true
+
+  const forThisOrder = b => b.orderId === order.id
+  return products.some(
+    p =>
+      (p.batches || []).some(forThisOrder) ||
+      (p.variations || []).some(v => (v.batches || []).some(forThisOrder))
+  )
+}
+
+/**
  * Replay every order's stocked-in flag against the shipments as they now
  * stand. Derived rather than patched at the transition, so deleting a shipment
  * or unticking a line walks the order back to `at_warehouse` on its own —
