@@ -163,6 +163,31 @@ export function findSKUConflict(sku, products = [], excludeProductId = null) {
   return null
 }
 
+// The same check for a whole set of variation SKUs at once: the base and every
+// variation, against the rest of the catalogue and against each other — two
+// variations of one product collide just as easily as two products do. The
+// caller resolves what each variation's SKU will actually be, a typed override
+// or the derived one, before calling: the check has to see what the save would
+// write. Returns id → owner, with the base under the 'base' key.
+export function findVariationSKUConflicts(
+  base,
+  variations = [],
+  products = [],
+  excludeProductId = null
+) {
+  const conflicts = {}
+  const baseOwner = findSKUConflict(base, products, excludeProductId)
+  if (baseOwner) conflicts.base = baseOwner
+  const seen = new Map([[(base || '').toUpperCase(), 'the base SKU']])
+  variations.forEach(v => {
+    const key = (v.sku || '').toUpperCase()
+    const owner = seen.get(key) || findSKUConflict(v.sku, products, excludeProductId)
+    if (owner) conflicts[v.id] = owner
+    if (!seen.has(key)) seen.set(key, getVariationLabel(v))
+  })
+  return conflicts
+}
+
 // Variation SKUs hang off the product's: SPACESAG-CASE-BLACK, and
 // SPACESAG-CASE-BLACK-XL once a second tier is in play. Unlike the product
 // head, the tier values are not truncated — they are the part a person reads
