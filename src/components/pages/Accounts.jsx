@@ -16,11 +16,13 @@ import {
   calculateAccountBalance,
   calculateWalletValueMYR,
   buildTransactionList,
+  accountUsage,
 } from '../../utils/helpers'
 import { CURRENCIES } from '../../utils/constants'
 import { ACCOUNT_ICONS, DEFAULT_ACCOUNT_ICON } from '../../utils/accountIcons'
 import EmptyState from '../shared/EmptyState'
 import ConfirmModal from '../shared/ConfirmModal'
+import FrozenValue from '../shared/FrozenValue'
 import BalanceAdjustModal from '../shared/BalanceAdjustModal'
 import TransferModal from '../shared/TransferModal'
 import AccountIcon from '../shared/AccountIcon'
@@ -29,6 +31,24 @@ import FormGroup from '../shared/FormGroup'
 import DataTable from '../shared/DataTable'
 
 const emptyAccountForm = { name: '', icon: DEFAULT_ACCOUNT_ICON, currency: 'MYR' }
+
+// The slices accountUsage counts, named for an owner-facing message.
+const USAGE_LABELS = {
+  sales: 'sale',
+  expenses: 'expense',
+  reloads: 'reload',
+  orders: 'order',
+  shipments: 'shipment',
+  transfers: 'transfer',
+}
+
+/** "3 sales, 1 expense" — the records that make an account load-bearing. */
+function describeUsage(usage) {
+  return Object.entries(usage?.counts || {})
+    .filter(([, n]) => n > 0)
+    .map(([key, n]) => `${n} ${USAGE_LABELS[key]}${n === 1 ? '' : 's'}`)
+    .join(', ')
+}
 
 const TX_COLUMNS = [
   { label: 'Date' },
@@ -52,6 +72,23 @@ export default function Accounts() {
   const [transfer, setTransfer] = useState({ open: false, transferId: null, fromAccountId: '' })
   const [confirmDeleteTransfer, setConfirmDeleteTransfer] = useState(null)
 
+  // An account's currency stops being a label the moment anything references it
+  // — see accountUsage for why changing it reinterprets history rather than
+  // converting it.
+  const usageFor = id =>
+    accountUsage(id, {
+      accounts: state.accounts,
+      expenses: state.expenses,
+      sales: state.sales,
+      reloads: state.reloads,
+      orders: state.orders,
+      shipments: state.shipments,
+      transfers: state.transfers,
+    })
+
+  const editUsage = editId ? usageFor(editId) : null
+  const currencyLocked = !!editUsage?.hasHistory
+
   function openAdd() {
     setEditId(null)
     setAccountForm(emptyAccountForm)
@@ -72,7 +109,17 @@ export default function Accounts() {
     e.preventDefault()
     if (editId) {
       const existing = state.accounts.find(a => a.id === editId)
-      dispatch({ type: 'UPDATE_ACCOUNT', payload: { ...existing, ...accountForm } })
+      // Re-asserted rather than trusted to the form, which does not even render
+      // the select once the account is referenced. Which figure the balance is
+      // depends on the currency, so it cannot be a field value.
+      dispatch({
+        type: 'UPDATE_ACCOUNT',
+        payload: {
+          ...existing,
+          ...accountForm,
+          currency: currencyLocked ? existing.currency : accountForm.currency,
+        },
+      })
     } else {
       dispatch({ type: 'ADD_ACCOUNT', payload: { ...accountForm, isDefault: false } })
     }
@@ -81,6 +128,21 @@ export default function Accounts() {
 
   function handleDeleteAccount(account) {
     dispatch({ type: 'DELETE_ACCOUNT', payload: account.id })
+  }
+
+  function handleDeleteClick(account) {
+    // Refuse rather than orphan. Six slices reference an account by id and none
+    // of them carry their own currency, so deleting it leaves those records
+    // pointing at nothing: they drop out of every balance and out of the
+    // ledger, silently, with no way to reconnect them.
+    const usage = usageFor(account.id)
+    if (usage.hasHistory) {
+      alert(
+        `Cannot delete: ${describeUsage(usage)} use this account. Reassign or remove them first.`
+      )
+      return
+    }
+    setConfirmDelete(account)
   }
 
   function openTransfer(fromAccountId = '') {
@@ -170,7 +232,7 @@ export default function Accounts() {
                         <Button variant="icon" onClick={() => openTransfer(a.id)} title="Transfer from this account"><ArrowRightLeft /></Button>
                       )}
                       {!a.isDefault && (
-                        <Button variant="icon" delete onClick={() => setConfirmDelete(a)} title="Delete"><Trash2 /></Button>
+                        <Button variant="icon" delete onClick={() => handleDeleteClick(a)} title="Delete"><Trash2 /></Button>
                       )}
                     </div>
                   </div>
@@ -286,17 +348,25 @@ export default function Accounts() {
           <div className="form-row">
             <FormGroup
               label="Currency"
-              required
-              hint="Non-MYR accounts are wallets that reloads top up"
+              required={!currencyLocked}
+              hint={
+                currencyLocked
+                  ? `${describeUsage(editUsage)} are already denominated in ${accountForm.currency}. Changing it would reinterpret them rather than convert them — name and icon stay editable.`
+                  : 'Non-MYR accounts are wallets that reloads top up'
+              }
             >
-              <select
-                value={accountForm.currency}
-                onChange={e => setAccountForm(f => ({ ...f, currency: e.target.value }))}
-              >
-                {CURRENCIES.map(c => (
-                  <option key={c} value={c}>{c}</option>
-                ))}
-              </select>
+              {currencyLocked ? (
+                <FrozenValue>{accountForm.currency}</FrozenValue>
+              ) : (
+                <select
+                  value={accountForm.currency}
+                  onChange={e => setAccountForm(f => ({ ...f, currency: e.target.value }))}
+                >
+                  {CURRENCIES.map(c => (
+                    <option key={c} value={c}>{c}</option>
+                  ))}
+                </select>
+              )}
             </FormGroup>
           </div>
           <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
@@ -321,7 +391,14 @@ export default function Accounts() {
         onClose={() => setConfirmDelete(null)}
         onConfirm={() => handleDeleteAccount(confirmDelete)}
         title="Delete Account"
-        message={`Delete account "${confirmDelete?.name}"?`}
+        message={
+          confirmDelete
+            ? `Delete account "${confirmDelete.name}"?` +
+              ((confirmDelete.adjustments || []).length > 0
+                ? ` Its ${confirmDelete.adjustments.length} balance adjustment(s) go with it.`
+                : '')
+            : ''
+        }
       />
       <ConfirmModal
         open={!!confirmDeleteTransfer}

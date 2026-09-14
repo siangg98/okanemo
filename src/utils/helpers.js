@@ -1330,6 +1330,60 @@ export function calculateAccountBalance(
 }
 
 /**
+ * What points at an account, and whether anything does.
+ *
+ * An account's `currency` is not a label. `calculateAccountBalance` branches on
+ * it, and sales, expenses, orders, shipments and transfers all inherit it rather
+ * than carrying their own — so changing it does not convert those figures, it
+ * reinterprets them. A MYR account with history turned into a CNY wallet reports
+ * a different quantity entirely (the reload pool, not income less outgoings),
+ * and every expense against it stops being counted at all, because a wallet's
+ * balance is read off the reloads alone. The Accounts form freezes the field for
+ * that reason, in the same spirit as an arrived shipment's lines.
+ *
+ * `adjustments` are deliberately not counted. They are a single scalar with
+ * nothing depending on them, and there is no UI to remove one — so blocking on
+ * them would trap an account whose opening balance was entered in the wrong
+ * currency. `Set Balance to` is the remedy, and it is one action. Every other
+ * slice here has no such escape hatch, which is why only they block.
+ *
+ * Takes an options object rather than positional slices: seven of them would be
+ * unreadable at the call site. Returns the breakdown as well as the boolean,
+ * because the message the owner sees has to name what is holding the account.
+ */
+export function accountUsage(
+  accountId,
+  {
+    accounts = [],
+    expenses = [],
+    sales = [],
+    reloads = [],
+    orders = [],
+    shipments = [],
+    transfers = [],
+  } = {}
+) {
+  if (!accountId) return { counts: {}, total: 0, hasHistory: false }
+
+  const counts = {
+    sales: sales.filter(s => s.accountId === accountId).length,
+    expenses: expenses.filter(e => e.accountId === accountId).length,
+    // Either side: the MYR account a reload left, or the wallet it landed in.
+    reloads: reloads.filter(
+      r => r.accountId === accountId || r.walletAccountId === accountId
+    ).length,
+    orders: orders.filter(o => o.walletAccountId === accountId).length,
+    shipments: shipments.filter(s => s.accountId === accountId).length,
+    transfers: transfers.filter(
+      t => t.fromAccountId === accountId || t.toAccountId === accountId
+    ).length,
+  }
+
+  const total = Object.keys(counts).reduce((sum, key) => sum + counts[key], 0)
+  return { counts, total, hasHistory: total > 0 }
+}
+
+/**
  * MYR value of a foreign wallet at what the currency actually cost to acquire.
  */
 export function calculateWalletValueMYR(accountId, reloads = []) {
