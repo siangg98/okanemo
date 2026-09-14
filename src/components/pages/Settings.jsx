@@ -10,7 +10,7 @@ const ALL_KEYS = Object.values(STORAGE_KEYS)
 
 function exportBackup(state) {
   const data = {
-    version: 2,
+    version: 3,
     exportedAt: new Date().toISOString(),
     suppliers: state.suppliers,
     shipments: state.shipments,
@@ -20,6 +20,7 @@ function exportBackup(state) {
     accounts: state.accounts,
     reloads: state.reloads,
     orders: state.orders,
+    transfers: state.transfers,
   }
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
   const url = URL.createObjectURL(blob)
@@ -50,6 +51,7 @@ function importBackup(json, dispatch) {
   // Slices added after v1 — absent from older backups, so default rather than reject
   const reloads = Array.isArray(data.reloads) ? data.reloads : []
   const orders = Array.isArray(data.orders) ? data.orders : []
+  const transfers = Array.isArray(data.transfers) ? data.transfers : []
 
   // Write directly to localStorage then reload
   localStorage.setItem(STORAGE_KEYS.SUPPLIERS, JSON.stringify(data.suppliers))
@@ -60,6 +62,7 @@ function importBackup(json, dispatch) {
   localStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(data.accounts))
   localStorage.setItem(STORAGE_KEYS.RELOADS, JSON.stringify(reloads))
   localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(orders))
+  localStorage.setItem(STORAGE_KEYS.TRANSFERS, JSON.stringify(transfers))
 
   window.location.reload()
   return true
@@ -110,6 +113,7 @@ export default function Settings() {
     suppliers: state.suppliers.length,
     reloads: state.reloads.length,
     orders: state.orders.length,
+    transfers: state.transfers.length,
     shipments: state.shipments.length,
     products: state.products.length,
     sales: state.sales.length,

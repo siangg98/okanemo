@@ -57,6 +57,9 @@ function loadInitialState() {
   const suppliers = load(STORAGE_KEYS.SUPPLIERS)
   const reloads = load(STORAGE_KEYS.RELOADS)
   const orders = load(STORAGE_KEYS.ORDERS)
+  // No migration and no replay needed: both legs of a transfer are derived on
+  // read by calculateAccountBalance, so a stale figure cannot be stored.
+  const transfers = load(STORAGE_KEYS.TRANSFERS)
 
   // Run migrations
   const smResult = migrateShipmentsToSupplierGroups(shipments)
@@ -204,6 +207,7 @@ function loadInitialState() {
     expenses: walletResult.expenses,
     reloads: walletResult.reloads,
     orders: stockedOrders,
+    transfers,
   }
 }
 
@@ -755,6 +759,29 @@ function appReducer(state, action) {
       })
       persist(STORAGE_KEYS.ACCOUNTS, accounts)
       return { ...state, accounts }
+    }
+
+    // --- Transfers ---
+    // Money moving between two MYR accounts. Nothing is replayed here: both
+    // legs are derived by calculateAccountBalance straight off the record, so
+    // an edit or a delete restores both balances at once. The MYR-only rule is
+    // enforced by TransferModal, the sole dispatcher of these actions.
+    case 'ADD_TRANSFER': {
+      const transfers = [...state.transfers, { ...action.payload, id: generateId() }]
+      persist(STORAGE_KEYS.TRANSFERS, transfers)
+      return { ...state, transfers }
+    }
+    case 'UPDATE_TRANSFER': {
+      const transfers = state.transfers.map(t =>
+        t.id === action.payload.id ? action.payload : t
+      )
+      persist(STORAGE_KEYS.TRANSFERS, transfers)
+      return { ...state, transfers }
+    }
+    case 'DELETE_TRANSFER': {
+      const transfers = state.transfers.filter(t => t.id !== action.payload)
+      persist(STORAGE_KEYS.TRANSFERS, transfers)
+      return { ...state, transfers }
     }
 
     default:

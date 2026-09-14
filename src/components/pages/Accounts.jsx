@@ -1,5 +1,13 @@
 import { useState, useMemo } from 'react'
-import { Pencil, Trash2, Coins, Wallet, ClipboardList, ArrowLeft } from 'lucide-react'
+import {
+  Pencil,
+  Trash2,
+  Coins,
+  Wallet,
+  ClipboardList,
+  ArrowLeft,
+  ArrowRightLeft,
+} from 'lucide-react'
 import { useApp } from '../../hooks/useApp'
 import {
   formatMYR,
@@ -14,6 +22,7 @@ import { ACCOUNT_ICONS, DEFAULT_ACCOUNT_ICON } from '../../utils/accountIcons'
 import EmptyState from '../shared/EmptyState'
 import ConfirmModal from '../shared/ConfirmModal'
 import BalanceAdjustModal from '../shared/BalanceAdjustModal'
+import TransferModal from '../shared/TransferModal'
 import AccountIcon from '../shared/AccountIcon'
 import Button from '../shared/Button'
 import FormGroup from '../shared/FormGroup'
@@ -27,6 +36,7 @@ const TX_COLUMNS = [
   { label: 'Account' },
   { label: 'Amount' },
   { label: 'Description' },
+  { label: 'Actions' },
 ]
 
 export default function Accounts() {
@@ -36,6 +46,11 @@ export default function Accounts() {
   const [accountForm, setAccountForm] = useState(emptyAccountForm)
   const [adjustAccountId, setAdjustAccountId] = useState(null)
   const [confirmDelete, setConfirmDelete] = useState(null)
+  // One object rather than three pieces of state: the transfer modal is either
+  // closed, opening blank, opening with a From account already chosen (the
+  // card's own button) or editing a transfer off the ledger.
+  const [transfer, setTransfer] = useState({ open: false, transferId: null, fromAccountId: '' })
+  const [confirmDeleteTransfer, setConfirmDeleteTransfer] = useState(null)
 
   function openAdd() {
     setEditId(null)
@@ -68,9 +83,38 @@ export default function Accounts() {
     dispatch({ type: 'DELETE_ACCOUNT', payload: account.id })
   }
 
+  function openTransfer(fromAccountId = '') {
+    setTransfer({ open: true, transferId: null, fromAccountId })
+  }
+
+  function openTransferEdit(transferId) {
+    setTransfer({ open: true, transferId, fromAccountId: '' })
+  }
+
+  function closeTransfer() {
+    setTransfer({ open: false, transferId: null, fromAccountId: '' })
+  }
+
+  const accountName = id => state.accounts.find(a => a.id === id)?.name || 'account'
+  const transferToDelete = state.transfers.find(t => t.id === confirmDeleteTransfer)
+  // Names resolved through `accountName` so a transfer naming an account that
+  // has since been deleted reads as plain text rather than "undefined".
+  const deleteTransferMessage = transferToDelete
+    ? `Delete this ${formatMYR(transferToDelete.amount)} transfer from ` +
+      `${accountName(transferToDelete.fromAccountId)} to ` +
+      `${accountName(transferToDelete.toAccountId)}? Both balances will be restored.`
+    : ''
+
   const transactions = useMemo(
-    () => buildTransactionList(state.accounts, state.expenses, state.sales, state.reloads),
-    [state.accounts, state.expenses, state.sales, state.reloads]
+    () =>
+      buildTransactionList(
+        state.accounts,
+        state.expenses,
+        state.sales,
+        state.reloads,
+        state.transfers
+      ),
+    [state.accounts, state.expenses, state.sales, state.reloads, state.transfers]
   )
 
   // Transaction rows carry only accountId — the name is plain text so it can go
@@ -87,6 +131,9 @@ export default function Accounts() {
         <div className="page-header">
           <div className="page-header-row">
             <h1>Accounts</h1>
+            <Button variant="secondary" onClick={() => openTransfer()}>
+              <ArrowRightLeft className="icon-sm" /> Transfer
+            </Button>
             <Button variant="primary" onClick={openAdd}>+ Add Account</Button>
           </div>
         </div>
@@ -102,7 +149,8 @@ export default function Accounts() {
                 state.accounts,
                 state.expenses,
                 state.sales,
-                state.reloads
+                state.reloads,
+                state.transfers
               )
               const atCostMYR =
                 currency === 'MYR' ? null : calculateWalletValueMYR(a.id, state.reloads)
@@ -118,6 +166,9 @@ export default function Accounts() {
                     <div className="account-actions">
                       <Button variant="icon" onClick={() => openEdit(a)} title="Edit"><Pencil /></Button>
                       <Button variant="icon" onClick={() => setAdjustAccountId(a.id)} title="Adjust Balance"><Coins /></Button>
+                      {currency === 'MYR' && (
+                        <Button variant="icon" onClick={() => openTransfer(a.id)} title="Transfer from this account"><ArrowRightLeft /></Button>
+                      )}
                       {!a.isDefault && (
                         <Button variant="icon" delete onClick={() => setConfirmDelete(a)} title="Delete"><Trash2 /></Button>
                       )}
@@ -167,6 +218,27 @@ export default function Accounts() {
                 {tx.isPositive ? '+' : '−'}{formatAmount(tx.amount, tx.currency)}
               </td>
               <td>{tx.description}</td>
+              <td>
+                {tx.transferId && (
+                  <>
+                    <Button
+                      variant="icon"
+                      onClick={() => openTransferEdit(tx.transferId)}
+                      title="Edit transfer"
+                    >
+                      <Pencil />
+                    </Button>
+                    <Button
+                      variant="icon"
+                      delete
+                      onClick={() => setConfirmDeleteTransfer(tx.transferId)}
+                      title="Delete transfer"
+                    >
+                      <Trash2 />
+                    </Button>
+                  </>
+                )}
+              </td>
             </tr>
           )}
           emptyState={<EmptyState icon={ClipboardList} message="No transactions yet." />}
@@ -238,12 +310,25 @@ export default function Accounts() {
 
       {/* Modals */}
       <BalanceAdjustModal accountId={adjustAccountId} onClose={() => setAdjustAccountId(null)} />
+      <TransferModal
+        open={transfer.open}
+        transferId={transfer.transferId}
+        fromAccountId={transfer.fromAccountId}
+        onClose={closeTransfer}
+      />
       <ConfirmModal
         open={!!confirmDelete}
         onClose={() => setConfirmDelete(null)}
         onConfirm={() => handleDeleteAccount(confirmDelete)}
         title="Delete Account"
         message={`Delete account "${confirmDelete?.name}"?`}
+      />
+      <ConfirmModal
+        open={!!confirmDeleteTransfer}
+        onClose={() => setConfirmDeleteTransfer(null)}
+        onConfirm={() => dispatch({ type: 'DELETE_TRANSFER', payload: confirmDeleteTransfer })}
+        title="Delete Transfer"
+        message={deleteTransferMessage}
       />
     </div>
   )
