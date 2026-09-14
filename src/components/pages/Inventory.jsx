@@ -14,6 +14,7 @@ import { useApp } from '../../hooks/useApp'
 import {
   collectSKUs,
   findSKUConflict,
+  findVariationSKUConflicts,
   generateId,
   generateSKU,
   makeVariationSKU,
@@ -168,26 +169,19 @@ export default function Inventory() {
   )
 
   // The base and every variation SKU at once, checked against the rest of the
-  // catalogue and against each other — two variations of the same product can
-  // collide just as easily as two products can. Returns id → owner, with the
-  // base under the 'base' key.
+  // catalogue and against each other. Returns id → owner, with the base under
+  // the 'base' key.
   const editVarConflicts = useMemo(() => {
     const product = state.products.find(p => p.id === editId)
     if (!product) return {}
     const base = editVarForm.sku.trim()
-    const conflicts = {}
-    const baseOwner = findSKUConflict(base, state.products, editId)
-    if (baseOwner) conflicts.base = baseOwner
-    const seen = new Map([[base.toUpperCase(), 'the base SKU']])
-    ;(product.variations || []).forEach(v => {
+    // Resolve the SKUs as they will be written — a typed one is the owner's own,
+    // the rest are derived — because that is what the check has to see.
+    const resolved = (product.variations || []).map(v => {
       const typed = (editVarForm.variationSkus[v.id] ?? '').trim()
-      const sku = typed || makeVariationSKU(base, v.tier1Value, v.tier2Value)
-      const key = sku.toUpperCase()
-      const owner = seen.get(key) || findSKUConflict(sku, state.products, editId)
-      if (owner) conflicts[v.id] = owner
-      if (!seen.has(key)) seen.set(key, getVariationLabel(v))
+      return { ...v, sku: typed || makeVariationSKU(base, v.tier1Value, v.tier2Value) }
     })
-    return conflicts
+    return findVariationSKUConflicts(base, resolved, state.products, editId)
   }, [editId, editVarForm.sku, editVarForm.variationSkus, state.products])
 
   // ===== Computed variation preview for add form =====
@@ -204,9 +198,24 @@ export default function Inventory() {
     }))
   }, [addForm.hasVariations, addForm.tier1Values, addForm.tier2Values, addForm.name, addForm.sku, state.products])
 
+  // What the add form is about to write. The base comes from the generator,
+  // which keeps it clear of the catalogue, but every variation SKU below it is
+  // derived — and makeVariationSKU() has no idea what is already out there, so a
+  // new "Space Bag" with an XL tier derives SPACE-BAG-XL whether or not another
+  // product already answers to it. Checked the way the edit form checks its own.
+  // Returns id → owner, with the base under the 'base' key.
+  const addVarConflicts = useMemo(() => {
+    if (!addForm.hasVariations) return {}
+    return findVariationSKUConflicts(addForm.sku.trim(), variationPreview, state.products)
+  }, [addForm.hasVariations, addForm.sku, variationPreview, state.products])
+
+  // A typed base that is taken, or a derived variation SKU that lands on one:
+  // either one blocks the save, exactly as it does in the edit form.
+  const addBlocked = !!addSkuConflict || Object.keys(addVarConflicts).length > 0
+
   function handleAddSubmit(e) {
     e.preventDefault()
-    if (addSkuConflict) return
+    if (addBlocked) return
     const baseSku = addForm.sku.trim() || generateSKU(addForm.name.trim(), collectSKUs(state.products))
 
     if (addForm.hasVariations) {
@@ -551,8 +560,8 @@ export default function Inventory() {
             <FormGroup
               label="Base SKU"
               hint={
-                addSkuConflict
-                  ? <SkuConflict owner={addSkuConflict} />
+                addSkuConflict || addVarConflicts.base
+                  ? <SkuConflict owner={addSkuConflict || addVarConflicts.base} />
                   : 'Auto-generated — edit to override'
               }
             >
@@ -652,6 +661,11 @@ export default function Inventory() {
                         <span style={{ color: 'var(--text-muted)', marginLeft: 6, fontFamily: 'monospace', fontSize: 11 }}>
                           {v.sku}
                         </span>
+                        {addVarConflicts[v.id] && (
+                          <div>
+                            <small><SkuConflict owner={addVarConflicts[v.id]} /></small>
+                          </div>
+                        )}
                       </div>
                     ))}
                   </div>
@@ -711,7 +725,7 @@ export default function Inventory() {
           )}
 
           <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-            <Button variant="primary" type="submit" disabled={!!addSkuConflict}>Add Product</Button>
+            <Button variant="primary" type="submit" disabled={addBlocked}>Add Product</Button>
             <Button variant="secondary" type="button" onClick={() => setView('list')}>Cancel</Button>
           </div>
         </form>
