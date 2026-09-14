@@ -29,6 +29,7 @@ import {
 import { SHIPMENT_STATUS } from '../../utils/constants'
 import EmptyState from '../shared/EmptyState'
 import ConfirmModal from '../shared/ConfirmModal'
+import FrozenValue from '../shared/FrozenValue'
 import Modal from '../shared/Modal'
 import Button from '../shared/Button'
 import FormGroup from '../shared/FormGroup'
@@ -73,32 +74,6 @@ function StatusPill({ status, legacy }) {
       {SHIPMENT_STATUS[status] || status}
       {legacy && ' · legacy'}
     </span>
-  )
-}
-
-/**
- * A fact frozen on arrival, shown as text rather than a disabled input.
- *
- * A disabled field still reads as "a control I ought to be able to use, and
- * can't" — text states what it is: a number already committed to stock. Styled
- * to sit exactly where an input would, so the form's rhythm is unchanged.
- */
-function FrozenValue({ children }) {
-  return (
-    <div
-      style={{
-        padding: '10px 14px',
-        background: 'var(--bg-primary)',
-        border: '1px solid var(--border-color)',
-        borderRadius: 'var(--radius-sm)',
-        fontFamily: 'var(--font-mono)',
-        fontVariantNumeric: 'tabular-nums',
-        fontSize: 14,
-        color: 'var(--text-secondary)',
-      }}
-    >
-      {children}
-    </div>
   )
 }
 
