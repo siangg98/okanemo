@@ -12,6 +12,7 @@ import {
   ArrowLeft,
   Check,
   X,
+  Lock,
 } from 'lucide-react'
 import { useApp } from '../../hooks/useApp'
 import {
@@ -34,12 +35,14 @@ import {
   calculateOrderItemUnitCostMYR,
   calculateShippedQty,
   isOrderFullyShipped,
+  orderHasLandedStock,
   drawFromReloads,
   restoreToReloads,
 } from '../../utils/helpers'
 import { ORDER_STATUS, DERIVED_ORDER_STATUSES } from '../../utils/constants'
 import EmptyState from '../shared/EmptyState'
 import ConfirmModal from '../shared/ConfirmModal'
+import FrozenValue from '../shared/FrozenValue'
 import Button from '../shared/Button'
 import FormGroup from '../shared/FormGroup'
 import DataTable from '../shared/DataTable'
@@ -191,6 +194,17 @@ export default function Orders() {
 
   const walletAccounts = state.accounts.filter(a => (a.currency || 'MYR') !== 'MYR')
 
+  // The order this form is editing, if any. Once any of its units have landed as
+  // stock, its line prices, overheads and wallet are frozen — they are what the
+  // batches were costed from. `handleSubmit` re-asserts the same fields, because
+  // rendering text instead of an input is not on its own a guarantee.
+  const editingOrder = useMemo(
+    () => (editId ? state.orders.find(o => o.id === editId) : null),
+    [editId, state.orders]
+  )
+  const itemsLocked =
+    !!editingOrder && orderHasLandedStock(editingOrder, state.shipments, state.products)
+
   function emptyFormWithWallet() {
     return { ...emptyForm(), walletAccountId: walletAccounts[0]?.id || '' }
   }
@@ -255,7 +269,22 @@ export default function Orders() {
     }
 
     if (editId) {
-      dispatch({ type: 'UPDATE_ORDER', payload: { id: editId, ...payload } })
+      // Re-asserted from the record rather than taken from the form. Once an
+      // order's units have landed, the wallet decides the currency every price
+      // is read in, and the lines and overheads feed the landed cost now frozen
+      // into the batches — so none of them can be a field value.
+      const frozen = itemsLocked
+        ? {
+            items: editingOrder.items,
+            walletAccountId: editingOrder.walletAccountId,
+            currency: editingOrder.currency,
+            domesticShipping: editingOrder.domesticShipping,
+            sellerDiscount: editingOrder.sellerDiscount,
+            otherAdjust: editingOrder.otherAdjust,
+          }
+        : null
+
+      dispatch({ type: 'UPDATE_ORDER', payload: { id: editId, ...payload, ...frozen } })
     } else {
       dispatch({ type: 'ADD_ORDER', payload })
     }
@@ -633,6 +662,29 @@ export default function Orders() {
           <h1>{editId ? 'Edit Order' : 'Add Order'}</h1>
         </div>
         <form onSubmit={handleSubmit}>
+          {itemsLocked && (
+            <div
+              style={{
+                background: 'var(--warning-bg)',
+                borderRadius: 'var(--radius-md)',
+                padding: '10px 14px',
+                marginBottom: 20,
+                fontSize: 13,
+                color: 'var(--warning-text)',
+                display: 'flex',
+                alignItems: 'flex-start',
+                gap: 8,
+              }}
+            >
+              <Lock className="icon-sm" style={{ marginTop: 2, flexShrink: 0 }} />
+              <span>
+                Units from this order have already landed, so its items, prices, overheads and
+                wallet are frozen into the stock they became. The date, supplier, status and notes
+                can still change.
+              </span>
+            </div>
+          )}
+
           <div className="form-row">
             <FormGroup label="Order Date" required>
               <input type="date" value={form.date} onChange={e => set('date', e.target.value)} required />
@@ -652,23 +704,31 @@ export default function Orders() {
           <div className="form-row">
             <FormGroup
               label="Paid From Wallet"
-              required
+              required={!itemsLocked}
               hint={
-                walletAccounts.length > 0
+                itemsLocked
+                  ? 'This wallet sets the currency every price below is read in'
+                  : walletAccounts.length > 0
                   ? 'Yuan is drawn from this wallet, oldest reload first'
                   : 'No wallet account yet — create one under Accounts'
               }
             >
-              <select
-                value={form.walletAccountId}
-                onChange={e => set('walletAccountId', e.target.value)}
-                required
-              >
-                <option value="">— Select wallet —</option>
-                {walletAccounts.map(a => (
-                  <option key={a.id} value={a.id}>{a.name} ({a.currency})</option>
-                ))}
-              </select>
+              {itemsLocked ? (
+                <FrozenValue>
+                  {wallet ? `${wallet.name} (${wallet.currency})` : '—'}
+                </FrozenValue>
+              ) : (
+                <select
+                  value={form.walletAccountId}
+                  onChange={e => set('walletAccountId', e.target.value)}
+                  required
+                >
+                  <option value="">— Select wallet —</option>
+                  {walletAccounts.map(a => (
+                    <option key={a.id} value={a.id}>{a.name} ({a.currency})</option>
+                  ))}
+                </select>
+              )}
             </FormGroup>
             <FormGroup
               label="Status"
@@ -698,16 +758,18 @@ export default function Orders() {
           {/* Items */}
           <div className="calculator-section">
             <div className="calculator-header">
-              <h3>Items</h3>
-              <div style={{ display: 'flex', gap: 8 }}>
-                <Button variant="add-row" type="button" onClick={() => setShowPaste(v => !v)}>
-                  <ClipboardPaste className="icon-btn" /> Paste Rows
-                </Button>
-                <Button variant="add-row" type="button" onClick={addItem}>+ Add Item</Button>
-              </div>
+              <h3>{itemsLocked ? 'What was ordered' : 'Items'}</h3>
+              {!itemsLocked && (
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <Button variant="add-row" type="button" onClick={() => setShowPaste(v => !v)}>
+                    <ClipboardPaste className="icon-btn" /> Paste Rows
+                  </Button>
+                  <Button variant="add-row" type="button" onClick={addItem}>+ Add Item</Button>
+                </div>
+              )}
             </div>
 
-            {showPaste && (
+            {!itemsLocked && showPaste && (
               <div style={{ marginBottom: 12 }}>
                 <textarea
                   value={pasteText}
@@ -760,7 +822,9 @@ export default function Orders() {
                 return (
                   <div key={item._id} style={{ marginBottom: 8 }}>
                     <div className="calc-row">
-                      {item.creating ? (
+                      {itemsLocked ? (
+                        <span className="row-value">{product?.name || item.name}</span>
+                      ) : item.creating ? (
                         <input
                           type="text"
                           autoFocus
@@ -781,29 +845,37 @@ export default function Orders() {
                           <option value={NEW_PRODUCT}>+ New product…</option>
                         </select>
                       )}
-                      <input
-                        type="number"
-                        min="1"
-                        placeholder="Qty"
-                        value={item.qty}
-                        onChange={e => updateItem(item._id, 'qty', e.target.value)}
-                      />
-                      <input
-                        type="number"
-                        step="0.01"
-                        min="0"
-                        placeholder="Price"
-                        value={item.unitPrice}
-                        onChange={e => updateItem(item._id, 'unitPrice', e.target.value)}
-                      />
+                      {itemsLocked ? (
+                        <span className="row-value">{item.qty}</span>
+                      ) : (
+                        <input
+                          type="number"
+                          min="1"
+                          placeholder="Qty"
+                          value={item.qty}
+                          onChange={e => updateItem(item._id, 'qty', e.target.value)}
+                        />
+                      )}
+                      {itemsLocked ? (
+                        <span className="row-value">{item.unitPrice}</span>
+                      ) : (
+                        <input
+                          type="number"
+                          step="0.01"
+                          min="0"
+                          placeholder="Price"
+                          value={item.unitPrice}
+                          onChange={e => updateItem(item._id, 'unitPrice', e.target.value)}
+                        />
+                      )}
                       <span className="row-value" style={{ fontSize: 13 }}>
                         {formatForeign(lineTotal, currency)}
                       </span>
-                      {form.items.length > 1 && (
+                      {!itemsLocked && form.items.length > 1 && (
                         <Button variant="remove" type="button" onClick={() => removeItem(item._id)} title="Remove item"><X /></Button>
                       )}
                     </div>
-                    {item.creating && (
+                    {!itemsLocked && item.creating && (
                       <div style={{
                         paddingLeft: 8, marginTop: 4,
                         display: 'flex', flexDirection: 'column', gap: 6,
@@ -953,18 +1025,30 @@ export default function Orders() {
             <div className="currency-section-body">
               <div className="form-row">
                 <FormGroup label={`Domestic Shipping (${currency})`}>
-                  <input
-                    type="number" step="0.01" min="0" placeholder="0.00"
-                    value={form.domesticShipping}
-                    onChange={e => set('domesticShipping', e.target.value)}
-                  />
+                  {itemsLocked ? (
+                    <FrozenValue>
+                      {formatForeign(parseFloat(form.domesticShipping) || 0, currency)}
+                    </FrozenValue>
+                  ) : (
+                    <input
+                      type="number" step="0.01" min="0" placeholder="0.00"
+                      value={form.domesticShipping}
+                      onChange={e => set('domesticShipping', e.target.value)}
+                    />
+                  )}
                 </FormGroup>
                 <FormGroup label={`Seller Discount (${currency})`}>
-                  <input
-                    type="number" step="0.01" min="0" placeholder="0.00"
-                    value={form.sellerDiscount}
-                    onChange={e => set('sellerDiscount', e.target.value)}
-                  />
+                  {itemsLocked ? (
+                    <FrozenValue>
+                      {formatForeign(parseFloat(form.sellerDiscount) || 0, currency)}
+                    </FrozenValue>
+                  ) : (
+                    <input
+                      type="number" step="0.01" min="0" placeholder="0.00"
+                      value={form.sellerDiscount}
+                      onChange={e => set('sellerDiscount', e.target.value)}
+                    />
+                  )}
                 </FormGroup>
               </div>
               <div className="form-row">
@@ -980,13 +1064,23 @@ export default function Orders() {
                 </FormGroup>
                 <FormGroup
                   label={`Fees / Vouchers (${currency})`}
-                  hint="Anything else on the checkout page — use Balance to fill this"
+                  hint={
+                    itemsLocked
+                      ? 'Already priced into the stock this order became'
+                      : 'Anything else on the checkout page — use Balance to fill this'
+                  }
                 >
-                  <input
-                    type="number" step="0.01" placeholder="0.00"
-                    value={form.otherAdjust}
-                    onChange={e => set('otherAdjust', e.target.value)}
-                  />
+                  {itemsLocked ? (
+                    <FrozenValue>
+                      {formatForeign(parseFloat(form.otherAdjust) || 0, currency)}
+                    </FrozenValue>
+                  ) : (
+                    <input
+                      type="number" step="0.01" placeholder="0.00"
+                      value={form.otherAdjust}
+                      onChange={e => set('otherAdjust', e.target.value)}
+                    />
+                  )}
                 </FormGroup>
               </div>
             </div>
@@ -1089,7 +1183,7 @@ export default function Orders() {
             />
           </FormGroup>
 
-          {unresolvedItems.length > 0 && (
+          {!itemsLocked && unresolvedItems.length > 0 && (
             <p style={{ fontSize: 12, color: 'var(--danger-text)', marginTop: 8 }}>
               {unresolvedItems.length} item{unresolvedItems.length === 1 ? '' : 's'} still need a
               product selected or created.
@@ -1097,7 +1191,13 @@ export default function Orders() {
           )}
 
           <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-            <Button variant="primary" type="submit" disabled={unresolvedItems.length > 0}>
+            {/* A locked order keeps its lines whatever the form computes, so an
+                unresolved line cannot be fixed here and must not block the save. */}
+            <Button
+              variant="primary"
+              type="submit"
+              disabled={!itemsLocked && unresolvedItems.length > 0}
+            >
               {editId ? 'Save Changes' : 'Add Order'}
             </Button>
             <Button variant="secondary" type="button" onClick={handleCancel}>Cancel</Button>
