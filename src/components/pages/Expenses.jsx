@@ -131,13 +131,14 @@ export default function Expenses() {
         state.accounts,
         state.expenses,
         state.sales,
-        state.reloads
+        state.reloads,
+        state.transfers
       )
       balances[a.id] =
         (a.currency || 'MYR') === 'MYR' ? formatMYR(balance) : formatForeign(balance, a.currency)
     })
     return balances
-  }, [state.accounts, state.expenses, state.sales, state.reloads])
+  }, [state.accounts, state.expenses, state.sales, state.reloads, state.transfers])
 
   // Preview the wallet draw. On edit, put this expense's own draw back first or
   // it would be counted twice.

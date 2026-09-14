@@ -49,7 +49,7 @@ src/
 
 ## Data model
 
-State is split into eight slices — suppliers, reloads, orders, shipments, products, sales, expenses, accounts — each persisted to its own `localStorage` key. Money flows through a five-stage purchasing pipeline: **reload** (convert currency into a wallet) → **order** (purchase against that wallet) → **shipment** (consolidate purchases) → **arrival** (freeze landed cost per unit) → **sale** (FIFO draw from cost batches).
+State is split into nine slices — suppliers, reloads, orders, shipments, products, sales, expenses, accounts, transfers — each persisted to its own `localStorage` key. Money flows through a five-stage purchasing pipeline: **reload** (convert currency into a wallet) → **order** (purchase against that wallet) → **shipment** (consolidate purchases) → **arrival** (freeze landed cost per unit) → **sale** (FIFO draw from cost batches). Account-to-account moves sit outside that pipeline: a transfer just moves MYR between two MYR accounts, so it is neither income nor spending.
 
 ## Backup & restore
 

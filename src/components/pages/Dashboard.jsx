@@ -196,7 +196,7 @@ function PipelineRail({ stages }) {
 
 export default function Dashboard() {
   const { state } = useApp()
-  const { sales, expenses, products, shipments, accounts, reloads, orders } = state
+  const { sales, expenses, products, shipments, accounts, reloads, orders, transfers } = state
   const chartTheme = useChartTheme()
 
   const pipeline = useMemo(
@@ -470,7 +470,14 @@ export default function Dashboard() {
               </li>
             ) : (
               accounts.map(a => {
-                const bal = calculateAccountBalance(a.id, accounts, expenses, sales, reloads)
+                const bal = calculateAccountBalance(
+                  a.id,
+                  accounts,
+                  expenses,
+                  sales,
+                  reloads,
+                  transfers
+                )
                 return (
                   <li key={a.id}>
                     <span>

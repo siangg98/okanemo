@@ -7,6 +7,7 @@ export const STORAGE_KEYS = {
   SUPPLIERS: 'okanemo_suppliers',
   RELOADS: 'okanemo_reloads',
   ORDERS: 'okanemo_orders',
+  TRANSFERS: 'okanemo_transfers',
 }
 
 // Purchase order lifecycle. Stock is only created when a shipment carrying the

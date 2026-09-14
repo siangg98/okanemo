@@ -1265,7 +1265,8 @@ export function calculatePurchasingMonth(month, reloads = [], orders = [], shipm
 /**
  * Current balance for an account, denominated in that account's own currency.
  *
- * MYR accounts:     adjustments + sale income − expenses − reloads paid out.
+ * MYR accounts:     adjustments + sale income − expenses − reloads paid out
+ *                   ± acct-to-acct transfers.
  * Foreign wallets:  adjustments + whatever is left of the reloads paid into it.
  *
  * A reload is a transfer, not an expense — it moves value between two accounts
@@ -1277,7 +1278,8 @@ export function calculateAccountBalance(
   accounts = [],
   expenses = [],
   sales = [],
-  reloads = []
+  reloads = [],
+  transfers = []
 ) {
   const account = accounts.find(a => a.id === accountId)
   if (!account) return 0
@@ -1290,6 +1292,17 @@ export function calculateAccountBalance(
       balance += adj.amount
     })
   }
+
+  // Both legs of a transfer are read off the one record, so a pair always nets
+  // to zero across the two accounts and neither side can drift on an edit or a
+  // delete. Transfers are MYR-to-MYR by construction (see TransferModal) —
+  // nothing stops a record naming a wallet, but a wallet's balance is the FIFO
+  // pool and only reloads feed it, so the UI never offers one.
+  transfers.forEach(t => {
+    const amount = parseFloat(t.amount) || 0
+    if (t.fromAccountId === accountId) balance -= amount
+    if (t.toAccountId === accountId) balance += amount
+  })
 
   if (currency === 'MYR') {
     sales.forEach(s => {
@@ -1328,13 +1341,21 @@ export function calculateWalletValueMYR(accountId, reloads = []) {
 
 /**
  * Build a flat sorted transaction list: sale income + adjustments + expenses +
- * reload transfers. Every row carries the currency it is denominated in, since
- * foreign wallets sit in the same ledger as MYR accounts.
+ * reload transfers + account transfers. Every row carries the currency it is
+ * denominated in, since foreign wallets sit in the same ledger as MYR accounts.
  *
  * A reload emits two rows — value out of the bank, value into the wallet — so
- * each account's ledger reads correctly on its own.
+ * each account's ledger reads correctly on its own. An account transfer does
+ * the same, and additionally carries `transferId` on both legs so the pair can
+ * be edited or deleted as the single movement it is.
  */
-export function buildTransactionList(accounts = [], expenses = [], sales = [], reloads = []) {
+export function buildTransactionList(
+  accounts = [],
+  expenses = [],
+  sales = [],
+  reloads = [],
+  transfers = []
+) {
   const txList = []
   const findAccount = id => accounts.find(a => a.id === id)
   // Plain text, no icon: rows end up in CSV exports and `<option>` labels, and
@@ -1423,6 +1444,46 @@ export function buildTransactionList(accounts = [], expenses = [], sales = [], r
         amount: parseFloat(r.amountForeign) || 0,
         description: `Reload from ${from ? from.name : 'bank'} @ ${formatRate(calculateReloadCostRate(r), r.currency)}`,
         isPositive: true,
+      })
+    }
+  })
+
+  // An account-to-account move, same two-legged shape as a reload but without
+  // the FX: both rows carry `transferId` so the history can offer them for edit
+  // and delete as one movement rather than two unconnected amounts.
+  transfers.forEach(t => {
+    const from = findAccount(t.fromAccountId)
+    const to = findAccount(t.toAccountId)
+    const amount = parseFloat(t.amount) || 0
+    const note = t.notes ? ` — ${t.notes}` : ''
+
+    if (from) {
+      txList.push({
+        id: `transfer-out-${t.id}`,
+        date: t.date,
+        type: 'transfer',
+        accountId: from.id,
+        accountName: label(from),
+        currency: from.currency || 'MYR',
+        amount,
+        description: `Transfer to ${to ? to.name : 'account'}${note}`,
+        isPositive: false,
+        transferId: t.id,
+      })
+    }
+
+    if (to) {
+      txList.push({
+        id: `transfer-in-${t.id}`,
+        date: t.date,
+        type: 'transfer',
+        accountId: to.id,
+        accountName: label(to),
+        currency: to.currency || 'MYR',
+        amount,
+        description: `Transfer from ${from ? from.name : 'account'}${note}`,
+        isPositive: true,
+        transferId: t.id,
       })
     }
   })

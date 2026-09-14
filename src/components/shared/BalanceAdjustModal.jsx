@@ -19,7 +19,8 @@ export default function BalanceAdjustModal({ accountId, onClose }) {
         state.accounts,
         state.expenses,
         state.sales,
-        state.reloads
+        state.reloads,
+        state.transfers
       )
     : 0
 
