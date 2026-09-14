@@ -77,23 +77,30 @@ export function generateId() {
 // one that usually distinguishes variants (Black/White/Small). A numeric suffix is
 // added only when the result would otherwise collide.
 //
-// Alpha words share an eight-character budget, spent left to right; a word
-// carrying a digit is emitted whole and costs nothing against it. Model numbers
-// and revisions — A07, PCIe 3.0 — are the part that tells two otherwise
-// identical products apart, so they are the last thing that may be clipped.
-// Clipping the concatenation instead turned "SKTC A07 PCIe 3.0 Mini ITX Case"
-// and its 4.0 sibling into one SKTCA07P-CASE, and the collision suffix then had
-// to carry the whole distinction. Only whole words fill the budget, so a name
-// with no digits comes out as the flat clip left it only while its head fits:
-// "Kitchen Storage Organizer Rack" is KITCHEN-RACK, where the clip gave
-// KITCHENS-RACK, and "Phone Holder" is PHONE-HOLDER either way.
+// A segment with no digit in it is the old flat clip, unchanged: the words run
+// together and are cut at eight, so "Space Savers Bag" is SPACESAV-BAG. There is
+// no model number to protect there, and spending the budget on whole words only
+// makes the name shorter and likelier to collide — SPACE-BAG, which "Space Bag"
+// already answers to, using five of the eight characters to say less.
+//
+// A segment carrying a digit is where the budget earns its keep: alpha words
+// share eight characters, spent left to right, but a word carrying a digit is
+// emitted whole and costs nothing against it. Model numbers and revisions — A07,
+// PCIe 3.0 — are the part that tells two otherwise identical products apart, so
+// they are the last thing that may be clipped. Clipping the concatenation
+// instead turned "SKTC A07 PCIe 3.0 Mini ITX Case" and its 4.0 sibling into one
+// SKTCA07P-CASE, and the collision suffix then had to carry the whole
+// distinction.
 function skuSegment(words) {
+  const tokens = words
+    .map(word => word.replace(/[^a-zA-Z0-9]/g, '').toUpperCase())
+    .filter(Boolean)
+  if (!tokens.some(token => /[0-9]/.test(token))) return tokens.join('').slice(0, 8)
+
   let budget = 8
   let spent = false
   let out = ''
-  for (const word of words) {
-    const token = word.replace(/[^a-zA-Z0-9]/g, '').toUpperCase()
-    if (!token) continue
+  for (const token of tokens) {
     if (/[0-9]/.test(token)) {
       out += token
       continue
