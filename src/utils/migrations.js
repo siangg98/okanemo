@@ -278,7 +278,8 @@ export function migrateExpenseCurrency(expenses) {
  *
  * Must run before migrateVariationSKUs, whose rebuild is keyed on a variation
  * SKU still starting with its product's; a base renamed here breaks that
- * prefix, so the variations are rebuilt in step.
+ * prefix, so the variations are rebuilt in step — and that rebuild is reported
+ * like any other change, since it is the last chance to write it.
  * Returns { products, migrated }.
  */
 export function migrateClippedSKUs(products) {
@@ -318,9 +319,18 @@ export function migrateClippedSKUs(products) {
     if (!staleIds.has(p.id)) return p
     const sku = generateSKU(p.name || '', taken)
     taken.push(sku)
-    if (sku !== p.sku) migrated = true
     const rebuilt = rebuildVariationSKUs({ ...p, sku })
-    ;(rebuilt.variations || []).forEach(v => v.sku && taken.push(v.sku))
+    const variations = rebuilt.variations || []
+    variations.forEach(v => v.sku && taken.push(v.sku))
+    // The rebuild counts as a change on its own, even when the head re-derives
+    // to the string it already had: a colliding pair whose -001 turns out to be
+    // its own name, or the suffix case re-emitting what it started with, still
+    // moves the variations hanging off it. Report it, because the caller writes
+    // only what it is told about — an unflagged rebuild stays in memory, and
+    // migrateVariationSKUs then finds nothing to do because it reads the
+    // already-rebuilt array. (By position: the rebuild maps variations 1:1.)
+    const moved = sku !== p.sku || variations.some((v, i) => v.sku !== p.variations?.[i]?.sku)
+    if (moved) migrated = true
     return rebuilt
   })
 
