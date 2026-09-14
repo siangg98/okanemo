@@ -180,13 +180,25 @@ export function makeVariationSKU(productSku, tier1Value, tier2Value) {
 // to carry down or the two halves drift: editing SKTCA07P-CASE-001 down to
 // SKTCA07P-CASE left its variations still reading -CASE-001-WHITE, naming a
 // parent that no longer existed.
-export function rebuildVariationSKUs(product) {
+//
+// A variation only follows when it hung off the base being replaced, so pass
+// that base as `renamedFrom` whenever the product's own SKU has already been
+// swapped: the prefix test has to read what the variations still carry, not
+// what the product is becoming. Without it a SKU typed in from outside is
+// rewritten into this product's name — VENDOR-XYZ-9981 on a SPACE-BAG product
+// came out SPACE-BAG-BLACK. It is the same prefix test migrateVariationSKUs
+// makes, and it has to be made here too: that migration never gets to see a
+// variation this one has already rewritten. A variation with no SKU at all is
+// still given one, since it cannot be foreign — nobody typed it.
+export function rebuildVariationSKUs(product, renamedFrom = null) {
   if (!product?.hasVariations || !Array.isArray(product.variations)) return product
   return {
     ...product,
-    variations: product.variations.map(v =>
-      v.skuCustom ? v : { ...v, sku: makeVariationSKU(product.sku, v.tier1Value, v.tier2Value) }
-    ),
+    variations: product.variations.map(v => {
+      if (v.skuCustom) return v
+      if (renamedFrom && v.sku && !v.sku.startsWith(`${renamedFrom}-`)) return v
+      return { ...v, sku: makeVariationSKU(product.sku, v.tier1Value, v.tier2Value) }
+    }),
   }
 }
 

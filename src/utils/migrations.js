@@ -279,7 +279,10 @@ export function migrateExpenseCurrency(expenses) {
  * Must run before migrateVariationSKUs, whose rebuild is keyed on a variation
  * SKU still starting with its product's; a base renamed here breaks that
  * prefix, so the variations are rebuilt in step — and that rebuild is reported
- * like any other change, since it is the last chance to write it.
+ * like any other change, since it is the last chance to write it. Only the
+ * variations that hung off the old base are carried down, the same line
+ * migrateVariationSKUs draws: a SKU typed in from outside never carried the
+ * prefix and is not this product's to rename.
  * Returns { products, migrated }.
  */
 export function migrateClippedSKUs(products) {
@@ -319,7 +322,7 @@ export function migrateClippedSKUs(products) {
     if (!staleIds.has(p.id)) return p
     const sku = generateSKU(p.name || '', taken)
     taken.push(sku)
-    const rebuilt = rebuildVariationSKUs({ ...p, sku })
+    const rebuilt = rebuildVariationSKUs({ ...p, sku }, p.sku)
     const variations = rebuilt.variations || []
     variations.forEach(v => v.sku && taken.push(v.sku))
     // The rebuild counts as a change on its own, even when the head re-derives
