@@ -28,6 +28,7 @@ import {
   calculateVariationStock,
   calculateVariationCostPerUnit,
   getVariationLabel,
+  hasSoldStock,
 } from '../../utils/helpers'
 import EmptyState from '../shared/EmptyState'
 import ConfirmModal from '../shared/ConfirmModal'
@@ -343,20 +344,51 @@ export default function Inventory() {
   }
 
   function handleDeleteVariation(product, variation) {
-    // Guard: has stock or sales
-    const stock = calculateVariationStock(variation)
     const hasSales = state.sales.some(s =>
       s.items && s.items.some(i => i.productId === product.id && i.variationId === variation.id)
     )
-    if (stock > 0 || hasSales) {
-      setConfirmDeleteVariation({ product, variation })
-    } else {
-      dispatch({ type: 'DELETE_VARIATION', payload: { productId: product.id, variationId: variation.id } })
+    // A sale's `batchDraws` name this batch id, and those draws are the only way
+    // its units ever go back — so a variation a sale is costed against cannot be
+    // removed at all, not even with a warning.
+    if (hasSales || hasSoldStock(variation)) {
+      alert(
+        `Cannot delete: ${getVariationLabel(variation)} has already been sold. Edit or delete those sales first.`
+      )
+      return
     }
+    // Unsold stock is a real loss, but a visible one, so it is worth a warning
+    // rather than a refusal.
+    if (calculateVariationStock(variation) > 0) {
+      setConfirmDeleteVariation({ product, variation })
+      return
+    }
+    dispatch({ type: 'DELETE_VARIATION', payload: { productId: product.id, variationId: variation.id } })
   }
 
   function handleDelete(product) {
     dispatch({ type: 'DELETE_PRODUCT', payload: product.id })
+  }
+
+  function handleDeleteClick(product) {
+    // Same reason as a variation: the batches go, and any sale that drew from
+    // them is left holding draws that name nothing.
+    if (hasSoldStock(product)) {
+      alert(
+        'Cannot delete: stock from this product has already been sold. Edit or delete those sales first.'
+      )
+      return
+    }
+    // Modern sales carry `items[]` and DELETE_PRODUCT does not clean them up —
+    // it only removes the legacy `s.productId` form — so a product they name is
+    // refused here rather than quietly orphaned onto a product that is gone.
+    const referenced = state.sales.some(s =>
+      (s.items || []).some(i => i.productId === product.id)
+    )
+    if (referenced) {
+      alert('Cannot delete: sales reference this product. Delete those sales first.')
+      return
+    }
+    setConfirmDelete(product)
   }
 
   function toggleExpand(productId) {
@@ -441,7 +473,7 @@ export default function Inventory() {
                     <td>—</td>
                     <td>
                       <Button variant="icon" onClick={() => openEdit(p)} title="Edit"><Pencil /></Button>
-                      <Button variant="icon" delete onClick={() => setConfirmDelete(p)} title="Delete"><Trash2 /></Button>
+                      <Button variant="icon" delete onClick={() => handleDeleteClick(p)} title="Delete"><Trash2 /></Button>
                     </td>
                   </tr>
 
@@ -519,7 +551,7 @@ export default function Inventory() {
                 <td>
                   <Button variant="icon" onClick={() => openEdit(p)} title="Edit"><Pencil /></Button>
                   <Button variant="icon" onClick={() => setRestockTarget({ productId: p.id })} title="Restock"><PackagePlus /></Button>
-                  <Button variant="icon" delete onClick={() => setConfirmDelete(p)} title="Delete"><Trash2 /></Button>
+                  <Button variant="icon" delete onClick={() => handleDeleteClick(p)} title="Delete"><Trash2 /></Button>
                 </td>
               </tr>
             )
@@ -887,8 +919,11 @@ export default function Inventory() {
                               variant="icon"
                               delete
                               onClick={() => handleDeleteVariation(product, v)}
-                              title="Delete variation"
-                              disabled={vStock > 0 || hasSales}
+                              title={
+                                hasSales || hasSoldStock(v)
+                                  ? `${getVariationLabel(v)} has sold stock — see the sales first`
+                                  : 'Delete variation'
+                              }
                             >
                               <Trash2 />
                             </Button>
@@ -962,7 +997,7 @@ export default function Inventory() {
         onClose={() => setConfirmDelete(null)}
         onConfirm={() => handleDelete(confirmDelete)}
         title="Delete Product"
-        message={`Delete "${confirmDelete?.name}"? All variations and linked sales will also be removed.`}
+        message={`Delete "${confirmDelete?.name}"? Every variation and the stock it holds go with it, and no cost is written off.`}
       />
       <ConfirmModal
         open={!!confirmDeleteVariation}
@@ -973,7 +1008,11 @@ export default function Inventory() {
           setConfirmDeleteVariation(null)
         }}
         title="Delete Variation"
-        message={`"${confirmDeleteVariation ? getVariationLabel(confirmDeleteVariation.variation) : ''}" has existing stock or sales. Delete anyway? This cannot be undone.`}
+        message={
+          confirmDeleteVariation
+            ? `"${getVariationLabel(confirmDeleteVariation.variation)}" still holds ${calculateVariationStock(confirmDeleteVariation.variation)} units. Deleting it removes that stock and writes off no cost. Continue?`
+            : ''
+        }
       />
     </div>
   )
