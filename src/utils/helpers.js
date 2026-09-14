@@ -76,18 +76,51 @@ export function generateId() {
 // Builds HEAD-TAIL: HEAD from the leading words, TAIL from the trailing word — the
 // one that usually distinguishes variants (Black/White/Small). A numeric suffix is
 // added only when the result would otherwise collide.
-// existingSkus: string[] of already-assigned SKUs, used to guarantee uniqueness
+//
+// Alpha words share an eight-character budget, spent left to right; a word
+// carrying a digit is emitted whole and costs nothing against it. Model numbers
+// and revisions — A07, PCIe 3.0 — are the part that tells two otherwise
+// identical products apart, so they are the last thing that may be clipped.
+// Clipping the concatenation instead turned "SKTC A07 PCIe 3.0 Mini ITX Case"
+// and its 4.0 sibling into one SKTCA07P-CASE, and the collision suffix then had
+// to carry the whole distinction. A name with no digits in it comes out exactly
+// as the old flat eight-character clip produced it: SPACESAG.
+function skuSegment(words) {
+  let budget = 8
+  let spent = false
+  let out = ''
+  for (const word of words) {
+    const token = word.replace(/[^a-zA-Z0-9]/g, '').toUpperCase()
+    if (!token) continue
+    if (/[0-9]/.test(token)) {
+      out += token
+      continue
+    }
+    if (budget <= 0) continue
+    // The first alpha word is the brand and has to appear, so it may be
+    // clipped. Every later one is taken whole or not at all — a word shortened
+    // to whatever the budget had left over reads as a typo, not an
+    // abbreviation: SKTCA09USB30M ends in the M of a dropped "Mini".
+    if (spent && token.length > budget) continue
+    out += token.slice(0, budget)
+    budget -= Math.min(token.length, budget)
+    spent = true
+  }
+  return out
+}
+
+// existingSkus: string[] of already-assigned SKUs, used to guarantee uniqueness.
+// Pass collectSKUs(products) — a variation SKU is as much a collision as a head.
 export function generateSKU(name = '', existingSkus = []) {
-  const clean = s => s.replace(/[^a-zA-Z0-9]/g, '').toUpperCase().slice(0, 8)
   const words = name.trim().split(/\s+/).filter(Boolean)
 
   let base
   if (words.length > 1) {
-    const head = clean(words.slice(0, -1).join(''))
-    const tail = clean(words[words.length - 1])
+    const head = skuSegment(words.slice(0, -1))
+    const tail = skuSegment(words.slice(-1))
     base = head && tail ? `${head}-${tail}` : head || tail
   } else {
-    base = clean(words[0] || '')
+    base = skuSegment(words)
   }
   if (!base) base = 'PRD'
 
@@ -97,6 +130,37 @@ export function generateSKU(name = '', existingSkus = []) {
   let n = 1
   while (taken.has(`${base}-${String(n).padStart(3, '0')}`)) n++
   return `${base}-${String(n).padStart(3, '0')}`
+}
+
+// Every SKU in play, product heads and variations alike. The uniqueness check
+// used to be handed only the heads, so a generated SKU could land straight on
+// top of an existing variation's — and a hand-typed one was never checked at
+// all. Both are printed on the same packing slip; both have to be unique.
+export function collectSKUs(products = []) {
+  const skus = []
+  products.forEach(p => {
+    if (p.sku) skus.push(p.sku)
+    ;(p.variations || []).forEach(v => {
+      if (v.sku) skus.push(v.sku)
+    })
+  })
+  return skus
+}
+
+// The owner of a SKU already in use, described well enough to go in an error
+// message, or null when it is free. `excludeProductId` is the product being
+// edited: its own SKU is not a conflict with itself.
+export function findSKUConflict(sku, products = [], excludeProductId = null) {
+  const target = (sku || '').trim().toUpperCase()
+  if (!target) return null
+  for (const p of products) {
+    if (p.id === excludeProductId) continue
+    if ((p.sku || '').toUpperCase() === target) return p.name
+    for (const v of p.variations || []) {
+      if ((v.sku || '').toUpperCase() === target) return `${p.name} · ${getVariationLabel(v)}`
+    }
+  }
+  return null
 }
 
 // Variation SKUs hang off the product's: SPACESAG-CASE-BLACK, and
@@ -109,6 +173,21 @@ export function makeVariationSKU(productSku, tier1Value, tier2Value) {
   const clean = s => (s || '').replace(/[^a-zA-Z0-9]/g, '').toUpperCase()
   const parts = [clean(tier1Value), clean(tier2Value)].filter(Boolean)
   return parts.length > 0 ? `${productSku}-${parts.join('-')}` : `${productSku}-VAR`
+}
+
+// Re-derive every variation SKU from the product's, leaving hand-set ones
+// (`skuCustom`) alone. Variation SKUs are derived, so an edit to the base has
+// to carry down or the two halves drift: editing SKTCA07P-CASE-001 down to
+// SKTCA07P-CASE left its variations still reading -CASE-001-WHITE, naming a
+// parent that no longer existed.
+export function rebuildVariationSKUs(product) {
+  if (!product?.hasVariations || !Array.isArray(product.variations)) return product
+  return {
+    ...product,
+    variations: product.variations.map(v =>
+      v.skuCustom ? v : { ...v, sku: makeVariationSKU(product.sku, v.tier1Value, v.tier2Value) }
+    ),
+  }
 }
 
 // ===== CSV Export =====

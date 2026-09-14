@@ -16,6 +16,7 @@ import {
 import { useApp } from '../../hooks/useApp'
 import {
   generateId,
+  collectSKUs,
   generateSKU,
   makeVariationSKU,
   splitTierValues,
@@ -313,7 +314,7 @@ export default function Orders() {
 
   /** The SKU the product head would get, which its variation SKUs hang off. */
   function draftBaseSku(name) {
-    return generateSKU(name.trim(), state.products.map(p => p.sku))
+    return generateSKU(name.trim(), collectSKUs(state.products))
   }
 
   /**

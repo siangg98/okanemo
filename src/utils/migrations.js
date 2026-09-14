@@ -1,4 +1,11 @@
-import { calculateProductCostPerUnit, generateId, makeVariationSKU } from './helpers.js'
+import {
+  calculateProductCostPerUnit,
+  collectSKUs,
+  generateId,
+  generateSKU,
+  makeVariationSKU,
+  rebuildVariationSKUs,
+} from './helpers.js'
 import {
   LEGACY_EMOJI_ICONS,
   DEFAULT_ACCOUNT_ICON,
@@ -248,17 +255,90 @@ export function migrateExpenseCurrency(expenses) {
 }
 
 /**
+ * The SKU generator used to clip the head to eight characters, which dropped
+ * exactly the part that tells near-identical products apart: "SKTC A07 PCIe 3.0
+ * Mini ITX Case" and its 4.0 sibling both proposed SKTCA07P-CASE, and only the
+ * -001 collision suffix kept them apart. Re-derive with the generator that
+ * keeps the digits, in two cases:
+ *
+ *   - the SKU is shared with another product, and
+ *   - the SKU is the old generator's output plus a -NNN collision suffix,
+ *     which is a machine artifact standing in for a distinction the name
+ *     already made.
+ *
+ * Nothing else is touched. A SKU somebody chose — or one the old generator got
+ * right — is already on packing slips and should not churn, which is why the
+ * suffix case insists the stem match what the old rule would have produced
+ * rather than trusting a trailing -001 on its own: "TSHIRT-001" typed by hand
+ * looks identical and is nobody's artifact.
+ *
+ * Every member of a colliding group is re-derived, not just the later ones:
+ * renaming one side leaves an asymmetric pair where the other still carries the
+ * clipped name.
+ *
+ * Must run before migrateVariationSKUs, whose rebuild is keyed on a variation
+ * SKU still starting with its product's; a base renamed here breaks that
+ * prefix, so the variations are rebuilt in step.
+ * Returns { products, migrated }.
+ */
+export function migrateClippedSKUs(products) {
+  let migrated = false
+  if (!Array.isArray(products)) return { products, migrated }
+
+  // The pre-fix head rule: every word run together, then clipped to eight.
+  const legacyBase = (name = '') => {
+    const clean = s => s.replace(/[^a-zA-Z0-9]/g, '').toUpperCase().slice(0, 8)
+    const words = name.trim().split(/\s+/).filter(Boolean)
+    if (words.length > 1) {
+      const head = clean(words.slice(0, -1).join(''))
+      const tail = clean(words[words.length - 1])
+      return head && tail ? `${head}-${tail}` : head || tail
+    }
+    return clean(words[0] || '')
+  }
+
+  const counts = new Map()
+  products.forEach(p => {
+    if (p.sku) counts.set(p.sku, (counts.get(p.sku) || 0) + 1)
+  })
+
+  const stale = p => {
+    if (!p.sku) return false
+    if (counts.get(p.sku) > 1) return true
+    const suffixed = p.sku.match(/^(.*)-\d{3}$/)
+    return !!suffixed && suffixed[1] === legacyBase(p.name || '')
+  }
+
+  const staleIds = new Set(products.filter(stale).map(p => p.id))
+  if (staleIds.size === 0) return { products, migrated }
+
+  const taken = collectSKUs(products.filter(p => !staleIds.has(p.id)))
+
+  const next = products.map(p => {
+    if (!staleIds.has(p.id)) return p
+    const sku = generateSKU(p.name || '', taken)
+    taken.push(sku)
+    if (sku !== p.sku) migrated = true
+    const rebuilt = rebuildVariationSKUs({ ...p, sku })
+    ;(rebuilt.variations || []).forEach(v => v.sku && taken.push(v.sku))
+    return rebuilt
+  })
+
+  return { products: next, migrated }
+}
+
+/**
  * Variation SKUs used to clip each tier value to four characters and run the
  * two tiers together, so Black and White both read as BLAC and WHIT, and a
  * Black/Small pair collapsed to BLACS. The suffix is the part a person scans to
  * tell two rows apart, so it is now spelled out in full and hyphenated between
  * tiers. Rebuild the ones already written.
  *
- * Only variations whose SKU still starts with their product's SKU are touched:
- * that is the shape this generator produces, and nothing in the UI lets a
- * variation SKU be typed by hand, so anything else came from outside the app
- * and is left alone. Renaming is safe because order lines, batches and sales
- * all reference a variation by id — the SKU is display only.
+ * A variation flagged `skuCustom` was typed by hand and is never touched.
+ * Beyond that, only variations whose SKU still starts with their product's is
+ * rebuilt: that is the shape this generator produces, so anything else came
+ * from outside the app and is left alone. Renaming is safe because order lines,
+ * batches and sales all reference a variation by id — the SKU is display only.
  * Returns { products, migrated }.
  */
 export function migrateVariationSKUs(products) {
@@ -268,6 +348,7 @@ export function migrateVariationSKUs(products) {
   products.forEach(product => {
     if (!product.sku || !Array.isArray(product.variations)) return
     product.variations.forEach(variation => {
+      if (variation.skuCustom) return
       if (!variation.sku || !variation.sku.startsWith(`${product.sku}-`)) return
       const rebuilt = makeVariationSKU(product.sku, variation.tier1Value, variation.tier2Value)
       if (rebuilt === variation.sku) return
