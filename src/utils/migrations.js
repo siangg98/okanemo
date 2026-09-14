@@ -3,6 +3,7 @@ import {
   collectSKUs,
   generateId,
   generateSKU,
+  isDerivedSKU,
   makeVariationSKU,
   rebuildVariationSKUs,
 } from './helpers.js'
@@ -282,7 +283,10 @@ export function migrateExpenseCurrency(expenses) {
  * like any other change, since it is the last chance to write it. Only the
  * variations that hung off the old base are carried down, the same line
  * migrateVariationSKUs draws: a SKU typed in from outside never carried the
- * prefix and is not this product's to rename.
+ * prefix and is not this product's to rename. Those strays are flagged
+ * `skuCustom` instead, so the Inventory form stops seeding a blank field for
+ * them and overwriting them on the next base edit; clearing that field clears
+ * the flag and hands the SKU back to the generator.
  * Returns { products, migrated }.
  */
 export function migrateClippedSKUs(products) {
@@ -322,17 +326,35 @@ export function migrateClippedSKUs(products) {
     if (!staleIds.has(p.id)) return p
     const sku = generateSKU(p.name || '', taken)
     taken.push(sku)
-    const rebuilt = rebuildVariationSKUs({ ...p, sku }, p.sku)
+    // A variation whose SKU never hung off this base is not this product's to
+    // rename, so the rebuild below leaves it alone — and left unflagged, the
+    // Inventory form seeds a blank SKU field for it (it only pre-fills
+    // overridden ones) and overwrites it the next time the base is edited. Flag
+    // it instead: `skuCustom` is what a variation earns by carrying a SKU the
+    // base would not have produced, and it is the same flag the form reads to
+    // pre-fill the field. The test is the rebuild's own, so the two cannot
+    // disagree about which variations are the product's.
+    const owned = {
+      ...p,
+      sku,
+      variations: (p.variations || []).map(v =>
+        v.sku && !v.skuCustom && !isDerivedSKU(v.sku, p.sku) ? { ...v, skuCustom: true } : v
+      ),
+    }
+    const flagged = (p.variations || []).some((v, i) => owned.variations[i] !== v)
+    const rebuilt = rebuildVariationSKUs(owned, p.sku)
     const variations = rebuilt.variations || []
     variations.forEach(v => v.sku && taken.push(v.sku))
     // The rebuild counts as a change on its own, even when the head re-derives
     // to the string it already had: a colliding pair whose -001 turns out to be
     // its own name, or the suffix case re-emitting what it started with, still
-    // moves the variations hanging off it. Report it, because the caller writes
-    // only what it is told about — an unflagged rebuild stays in memory, and
+    // moves the variations hanging off it. The flag counts too — it is what
+    // stops the form overwriting the SKU. Report both, because the caller writes
+    // only what it is told about — an unflagged change stays in memory, and
     // migrateVariationSKUs then finds nothing to do because it reads the
     // already-rebuilt array. (By position: the rebuild maps variations 1:1.)
-    const moved = sku !== p.sku || variations.some((v, i) => v.sku !== p.variations?.[i]?.sku)
+    const moved =
+      flagged || sku !== p.sku || variations.some((v, i) => v.sku !== p.variations?.[i]?.sku)
     if (moved) migrated = true
     return rebuilt
   })
@@ -362,7 +384,7 @@ export function migrateVariationSKUs(products) {
     if (!product.sku || !Array.isArray(product.variations)) return
     product.variations.forEach(variation => {
       if (variation.skuCustom) return
-      if (!variation.sku || !variation.sku.startsWith(`${product.sku}-`)) return
+      if (!isDerivedSKU(variation.sku, product.sku)) return
       const rebuilt = makeVariationSKU(product.sku, variation.tier1Value, variation.tier2Value)
       if (rebuilt === variation.sku) return
       variation.sku = rebuilt
