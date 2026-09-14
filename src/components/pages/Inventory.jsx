@@ -12,6 +12,8 @@ import {
 } from 'lucide-react'
 import { useApp } from '../../hooks/useApp'
 import {
+  collectSKUs,
+  findSKUConflict,
   generateId,
   generateSKU,
   makeVariationSKU,
@@ -61,6 +63,16 @@ function StockBadge({ tone, label, fontSize = 12 }) {
   )
 }
 
+/**
+ * A SKU already in use, named so the owner is findable. Small text on the page
+ * ground, so it takes --danger-strong: --danger-text lands at 4.46:1, just
+ * under the 4.5:1 floor that text has to clear.
+ */
+function SkuConflict({ owner }) {
+  if (!owner) return null
+  return <span style={{ color: 'var(--danger-strong)' }}>Already used by {owner}</span>
+}
+
 const INVENTORY_COLUMNS = [
   { label: 'Product' },
   { label: 'Stock' },
@@ -105,6 +117,9 @@ export default function Inventory() {
     name: '', sku: '', link: '',
     tier1Name: '', tier2Name: '',
     newVariationTier1: '', newVariationTier2: '',
+    // id → SKU, so a hand-typed variation SKU is saved by the same button as
+    // the rest of the form rather than persisting on every keystroke.
+    variationSkus: {},
   })
 
   function openAdd() {
@@ -123,6 +138,13 @@ export default function Inventory() {
         tier2Name: product.tier2?.name || 'Size',
         newVariationTier1: '',
         newVariationTier2: '',
+        // Only an overridden SKU is pre-filled. A derived one is left blank so
+        // its placeholder tracks the base as you edit it — pre-filling the
+        // current value instead would make every variation look hand-set the
+        // moment the base changed, and freeze them all against the cascade.
+        variationSkus: Object.fromEntries(
+          (product.variations || []).map(v => [v.id, v.skuCustom ? v.sku || '' : ''])
+        ),
       })
       setView('edit-variation')
     } else {
@@ -131,13 +153,50 @@ export default function Inventory() {
     }
   }
 
+  // ===== SKU conflicts =====
+  // The generator guarantees uniqueness for the SKUs it makes, but these fields
+  // are typed by hand and used to be accepted in silence — which is how two
+  // products came to share SKTCA07P-CASE. `editId` excludes the product being
+  // edited: its own SKU is not a conflict with itself.
+  const addSkuConflict = useMemo(
+    () => (addForm.skuTouched ? findSKUConflict(addForm.sku, state.products) : null),
+    [addForm.sku, addForm.skuTouched, state.products]
+  )
+  const editSkuConflict = useMemo(
+    () => findSKUConflict(editForm.sku, state.products, editId),
+    [editForm.sku, state.products, editId]
+  )
+
+  // The base and every variation SKU at once, checked against the rest of the
+  // catalogue and against each other — two variations of the same product can
+  // collide just as easily as two products can. Returns id → owner, with the
+  // base under the 'base' key.
+  const editVarConflicts = useMemo(() => {
+    const product = state.products.find(p => p.id === editId)
+    if (!product) return {}
+    const base = editVarForm.sku.trim()
+    const conflicts = {}
+    const baseOwner = findSKUConflict(base, state.products, editId)
+    if (baseOwner) conflicts.base = baseOwner
+    const seen = new Map([[base.toUpperCase(), 'the base SKU']])
+    ;(product.variations || []).forEach(v => {
+      const typed = (editVarForm.variationSkus[v.id] ?? '').trim()
+      const sku = typed || makeVariationSKU(base, v.tier1Value, v.tier2Value)
+      const key = sku.toUpperCase()
+      const owner = seen.get(key) || findSKUConflict(sku, state.products, editId)
+      if (owner) conflicts[v.id] = owner
+      if (!seen.has(key)) seen.set(key, getVariationLabel(v))
+    })
+    return conflicts
+  }, [editId, editVarForm.sku, editVarForm.variationSkus, state.products])
+
   // ===== Computed variation preview for add form =====
   const variationPreview = useMemo(() => {
     if (!addForm.hasVariations) return []
     const t1 = splitTierValues(addForm.tier1Values)
     const t2 = splitTierValues(addForm.tier2Values)
     if (t1.length === 0) return []
-    const baseSku = addForm.sku.trim() || generateSKU(addForm.name.trim(), state.products.map(p => p.sku))
+    const baseSku = addForm.sku.trim() || generateSKU(addForm.name.trim(), collectSKUs(state.products))
     return generateVariationCombinations(t1, t2).map(combo => ({
       ...combo,
       sku: makeVariationSKU(baseSku, combo.tier1Value, combo.tier2Value),
@@ -147,7 +206,8 @@ export default function Inventory() {
 
   function handleAddSubmit(e) {
     e.preventDefault()
-    const baseSku = addForm.sku.trim() || generateSKU(addForm.name.trim(), state.products.map(p => p.sku))
+    if (addSkuConflict) return
+    const baseSku = addForm.sku.trim() || generateSKU(addForm.name.trim(), collectSKUs(state.products))
 
     if (addForm.hasVariations) {
       const t1Values = splitTierValues(addForm.tier1Values)
@@ -212,6 +272,7 @@ export default function Inventory() {
 
   function handleEditSubmit(e) {
     e.preventDefault()
+    if (editSkuConflict) return
     const product = state.products.find(p => p.id === editId)
     dispatch({
       type: 'UPDATE_PRODUCT',
@@ -222,16 +283,34 @@ export default function Inventory() {
 
   function handleEditVariationSubmit(e) {
     e.preventDefault()
+    if (Object.keys(editVarConflicts).length > 0) return
     const product = state.products.find(p => p.id === editId)
+    const sku = editVarForm.sku.trim()
+
+    // Variation SKUs are derived from the base, so an edit to the base has to
+    // carry down — leaving them behind is what stranded -CASE-001-WHITE under a
+    // parent that had already dropped its -001. A SKU typed to something other
+    // than what the base would produce is the owner's own and is flagged
+    // `skuCustom` so nothing regenerates over it; typing the derived value back
+    // in clears the flag rather than freezing it.
+    const variations = (product.variations || []).map(v => {
+      const derived = makeVariationSKU(sku, v.tier1Value, v.tier2Value)
+      const typed = (editVarForm.variationSkus[v.id] ?? '').trim()
+      return typed && typed !== derived
+        ? { ...v, sku: typed, skuCustom: true }
+        : { ...v, sku: derived, skuCustom: false }
+    })
+
     dispatch({
       type: 'UPDATE_PRODUCT',
       payload: {
         ...product,
         name: editVarForm.name.trim(),
-        sku: editVarForm.sku.trim(),
+        sku,
         link: editVarForm.link,
         tier1: { ...product.tier1, name: editVarForm.tier1Name.trim() || 'Colour' },
         tier2: product.tier2 ? { ...product.tier2, name: editVarForm.tier2Name.trim() || 'Size' } : null,
+        variations,
       },
     })
     setView('list')
@@ -463,13 +542,20 @@ export default function Inventory() {
                   setAddForm(f => ({
                     ...f,
                     name,
-                    sku: f.skuTouched ? f.sku : generateSKU(name, state.products.map(p => p.sku)),
+                    sku: f.skuTouched ? f.sku : generateSKU(name, collectSKUs(state.products)),
                   }))
                 }}
                 required
               />
             </FormGroup>
-            <FormGroup label="Base SKU" hint="Auto-generated — edit to override">
+            <FormGroup
+              label="Base SKU"
+              hint={
+                addSkuConflict
+                  ? <SkuConflict owner={addSkuConflict} />
+                  : 'Auto-generated — edit to override'
+              }
+            >
               <input
                 type="text"
                 placeholder="e.g. TSHIRT-001"
@@ -625,7 +711,7 @@ export default function Inventory() {
           )}
 
           <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-            <Button variant="primary" type="submit">Add Product</Button>
+            <Button variant="primary" type="submit" disabled={!!addSkuConflict}>Add Product</Button>
             <Button variant="secondary" type="button" onClick={() => setView('list')}>Cancel</Button>
           </div>
         </form>
@@ -647,7 +733,7 @@ export default function Inventory() {
                 required
               />
             </FormGroup>
-            <FormGroup label="SKU">
+            <FormGroup label="SKU" hint={<SkuConflict owner={editSkuConflict} />}>
               <input
                 type="text"
                 value={editForm.sku}
@@ -666,7 +752,7 @@ export default function Inventory() {
             </FormGroup>
           </div>
           <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-            <Button variant="primary" type="submit">Save Changes</Button>
+            <Button variant="primary" type="submit" disabled={!!editSkuConflict}>Save Changes</Button>
             <Button variant="secondary" type="button" onClick={() => setView('list')}>Cancel</Button>
           </div>
         </form>
@@ -694,7 +780,14 @@ export default function Inventory() {
                       required
                     />
                   </FormGroup>
-                  <FormGroup label="Base SKU">
+                  <FormGroup
+                    label="Base SKU"
+                    hint={
+                      editVarConflicts.base
+                        ? <SkuConflict owner={editVarConflicts.base} />
+                        : 'Variation SKUs follow this unless overridden below'
+                    }
+                  >
                     <input
                       type="text"
                       value={editVarForm.sku}
@@ -730,44 +823,80 @@ export default function Inventory() {
                     </FormGroup>
                   )}
                 </div>
-                <Button variant="primary" type="submit">Save Changes</Button>
-              </form>
-
-              {/* Existing variations */}
-              <div style={{ marginTop: 24 }}>
-                <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 12 }}>
-                  Variations ({product.variations.length})
-                </h3>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                  {product.variations.map(v => {
-                    const vStock = calculateVariationStock(v)
-                    const hasSales = state.sales.some(s =>
-                      s.items && s.items.some(i => i.productId === product.id && i.variationId === v.id)
-                    )
-                    return (
-                      <div key={v.id} style={{
-                        display: 'flex', alignItems: 'center', gap: 12,
-                        padding: '8px 12px',
-                        background: 'var(--bg-secondary)',
-                        borderRadius: 'var(--radius-sm)',
-                      }}>
-                        <span style={{ flex: 1, fontWeight: 600, fontSize: 13 }}>{getVariationLabel(v)}</span>
-                        <span style={{ fontSize: 12, color: 'var(--text-muted)', fontFamily: 'monospace' }}>{v.sku}</span>
-                        <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{vStock} in stock</span>
-                        <Button
-                          variant="icon"
-                          delete
-                          onClick={() => handleDeleteVariation(product, v)}
-                          title="Delete variation"
-                          disabled={vStock > 0 || hasSales}
-                        >
-                          <Trash2 />
-                        </Button>
-                      </div>
-                    )
-                  })}
+                {/* Existing variations. Inside the form, so one Save Changes
+                    covers the base SKU and the variation SKUs together — they
+                    are derived from each other and can't be saved apart. */}
+                <div style={{ marginTop: 24 }}>
+                  <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 12 }}>
+                    Variations ({product.variations.length})
+                  </h3>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    {product.variations.map(v => {
+                      const vStock = calculateVariationStock(v)
+                      const hasSales = state.sales.some(s =>
+                        s.items && s.items.some(i => i.productId === product.id && i.variationId === v.id)
+                      )
+                      // Blank means "follow the base": the placeholder shows
+                      // what that produces, so clearing the field is how you
+                      // give an overridden SKU back to the generator.
+                      const derived = makeVariationSKU(
+                        editVarForm.sku.trim(), v.tier1Value, v.tier2Value
+                      )
+                      return (
+                        <div key={v.id} style={{
+                          display: 'flex', flexDirection: 'column', gap: 4,
+                          padding: '8px 12px',
+                          background: 'var(--bg-secondary)',
+                          borderRadius: 'var(--radius-sm)',
+                        }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                            <span style={{ flex: 1, fontWeight: 600, fontSize: 13 }}>
+                              {getVariationLabel(v)}
+                            </span>
+                            <input
+                              type="text"
+                              className="variation-sku-input"
+                              aria-label={`SKU for ${getVariationLabel(v)}`}
+                              value={editVarForm.variationSkus[v.id] ?? ''}
+                              placeholder={derived}
+                              onChange={e => setEditVarForm(f => ({
+                                ...f,
+                                variationSkus: { ...f.variationSkus, [v.id]: e.target.value },
+                              }))}
+                            />
+                            <span style={{
+                              fontSize: 12, color: 'var(--text-secondary)', whiteSpace: 'nowrap',
+                            }}>
+                              {vStock} in stock
+                            </span>
+                            <Button
+                              variant="icon"
+                              delete
+                              onClick={() => handleDeleteVariation(product, v)}
+                              title="Delete variation"
+                              disabled={vStock > 0 || hasSales}
+                            >
+                              <Trash2 />
+                            </Button>
+                          </div>
+                          {editVarConflicts[v.id] && (
+                            <small><SkuConflict owner={editVarConflicts[v.id]} /></small>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>
                 </div>
-              </div>
+
+                <Button
+                  variant="primary"
+                  type="submit"
+                  style={{ marginTop: 20 }}
+                  disabled={Object.keys(editVarConflicts).length > 0}
+                >
+                  Save Changes
+                </Button>
+              </form>
 
               {/* Add new variation */}
               <div style={{ marginTop: 20 }}>

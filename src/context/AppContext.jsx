@@ -1,6 +1,7 @@
 import { createContext, useReducer } from 'react'
 import {
   generateId,
+  collectSKUs,
   generateSKU,
   calculateProductCostPerUnit,
   calculateVariationCostPerUnit,
@@ -27,6 +28,7 @@ import {
   migrateShipmentLifecycle,
   migrateExpenseCurrency,
   migrateOrderItemProductId,
+  migrateClippedSKUs,
   migrateVariationSKUs,
   migrateAccountIconNames,
 } from '../utils/migrations'
@@ -65,6 +67,15 @@ function loadInitialState() {
   const bmResult = migrateBatchSupplierGroupIndex(products)
   products = bmResult.products
   if (bmResult.migrated) {
+    localStorage.setItem(STORAGE_KEYS.PRODUCTS, JSON.stringify(products))
+  }
+
+  // Re-derive the SKUs the old eight-character head clip mangled. Runs first:
+  // it renames bases, and the variation rebuild below keys off the base it
+  // finds.
+  const csResult = migrateClippedSKUs(products)
+  products = csResult.products
+  if (csResult.migrated) {
     localStorage.setItem(STORAGE_KEYS.PRODUCTS, JSON.stringify(products))
   }
 
@@ -317,7 +328,7 @@ function materializeStock(shipment, orders, products) {
       next.push({
         id: generateId(),
         name,
-        sku: generateSKU(name, next.map(p => p.sku)),
+        sku: generateSKU(name, collectSKUs(next)),
         link: '',
         purchasePriceMYR: batch.purchasePriceMYR,
         packSize: 1,
@@ -564,7 +575,7 @@ function appReducer(state, action) {
     // --- Products ---
     case 'ADD_PRODUCT': {
       let product = {
-        sku: generateSKU(action.payload.name, state.products.map(p => p.sku)),
+        sku: generateSKU(action.payload.name, collectSKUs(state.products)),
         ...action.payload,
         // Quick-create from an order form needs the id up front so the line can
         // bind to the product in the same tick, so honour a supplied one.

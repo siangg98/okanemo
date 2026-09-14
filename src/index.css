@@ -539,8 +539,21 @@ h1, h2, h3, h4, h5, h6 {
     gap: 8px;
 }
 
-.btn-primary:hover {
+.btn-primary:hover:not(:disabled) {
     background: var(--accent-solid-hover);
+}
+
+/* A blocked action has to look blocked. The forms refuse a duplicate SKU by
+   disabling Save, and without this the button kept its full-strength accent and
+   pointer — a click that silently did nothing, which reads as a broken button
+   rather than a refused one. Dimming is enough here: the reason is already
+   spelled out under the offending field. */
+.btn-primary:disabled,
+.btn-secondary:disabled,
+.btn-danger:disabled,
+.btn-icon:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
 }
 
 .btn-secondary {
@@ -1398,7 +1411,8 @@ form {
 }
 
 .form-group input,
-.form-group select {
+.form-group select,
+.variation-sku-input {
     width: 100%;
     padding: 10px 14px;
     /* A shade off the form's own surface, not a filled tan block — the field
@@ -1412,7 +1426,8 @@ form {
 }
 
 .form-group input:focus,
-.form-group select:focus {
+.form-group select:focus,
+.variation-sku-input:focus {
     outline: none;
     border-color: var(--accent-primary);
     box-shadow: 0 0 0 3px var(--accent-bg);
@@ -1422,6 +1437,21 @@ form {
 .form-group input[type="number"] {
     font-family: var(--font-mono);
     font-variant-numeric: tabular-nums;
+}
+
+/* The variation SKU field sits in a flex row rather than a form-group, so it
+   opts into the field styling by name instead of by ancestor. Monospace and
+   tighter than a form field: it is one code on a list of codes, read by
+   comparing it against the ones above and below it. Shrinkable, not fixed —
+   at a rigid 260px the row set a min-content width the card had to grow to
+   meet, and the whole page scrolled sideways. */
+.variation-sku-input {
+    flex: 0 1 260px;
+    width: auto;
+    min-width: 0;
+    padding: 6px 10px;
+    font-family: var(--font-mono);
+    font-size: 12px;
 }
 
 /* Date input specific styling */

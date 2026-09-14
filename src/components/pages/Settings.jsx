@@ -2,7 +2,7 @@ import { useRef, useState } from 'react'
 import { Check, Sparkles, Download, Upload, Trash2 } from 'lucide-react'
 import { useApp } from '../../hooks/useApp'
 import { STORAGE_KEYS } from '../../utils/constants'
-import { generateSKU } from '../../utils/helpers'
+import { collectSKUs, generateSKU } from '../../utils/helpers'
 import ConfirmModal from '../shared/ConfirmModal'
 import Button from '../shared/Button'
 
@@ -75,7 +75,7 @@ export default function Settings() {
   function handleGenerateMissingSKUs() {
     const missing = state.products.filter(p => !p.sku)
     // Accumulate assigned SKUs so sequence numbers stay correct within the batch
-    const assignedSkus = state.products.map(p => p.sku).filter(Boolean)
+    const assignedSkus = collectSKUs(state.products)
     missing.forEach(p => {
       const sku = generateSKU(p.name, assignedSkus)
       assignedSkus.push(sku)
