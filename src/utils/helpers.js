@@ -54,6 +54,22 @@ export function calculateVariationStock(variation) {
 }
 
 /**
+ * Whether anything has already been drawn from a container's batches — a product
+ * (which owns `variations`) or one variation on its own.
+ *
+ * `remainingUnits < quantity` means a sale took units out of that batch, and the
+ * sale recorded the batch id in its `batchDraws`. Those draws are the only way
+ * the units ever go back (`restoreToBatches`), so removing the batch leaves the
+ * draw naming nothing and the units unrecoverable — the reason Inventory refuses
+ * this delete, the way Shipments refuses to remove a box whose stock has sold.
+ */
+export function hasSoldStock(container) {
+  const drawn = b => (b.remainingUnits ?? 0) < (b.quantity ?? 0)
+  if ((container?.batches || []).some(drawn)) return true
+  return (container?.variations || []).some(v => (v.batches || []).some(drawn))
+}
+
+/**
  * FIFO cost per unit for a single variation.
  */
 export function calculateVariationCostPerUnit(variation, shipments = []) {
