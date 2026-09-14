@@ -3,6 +3,7 @@ import {
   generateId,
   collectSKUs,
   generateSKU,
+  rebuildVariationSKUs,
   calculateProductCostPerUnit,
   calculateVariationCostPerUnit,
   calculateVariationStock,
@@ -597,9 +598,19 @@ function appReducer(state, action) {
       return { ...state, products }
     }
     case 'UPDATE_PRODUCT': {
-      const products = state.products.map(p =>
-        p.id === action.payload.id ? action.payload : p
-      )
+      const products = state.products.map(p => {
+        if (p.id !== action.payload.id) return p
+        // Carrying a renamed base down to its variations belongs here, not in
+        // whichever form happened to edit it: Settings' "generate missing SKUs"
+        // moves a base without going near Inventory, and used to leave the
+        // variations naming a parent that never existed. The Inventory form's
+        // own cascade still runs — it is the only place that knows which SKUs
+        // were typed — and the variations it has already renamed no longer
+        // start with the old base, so this leaves them exactly as they are.
+        return action.payload.sku === p.sku
+          ? action.payload
+          : rebuildVariationSKUs(action.payload, p.sku)
+      })
       persist(STORAGE_KEYS.PRODUCTS, products)
       return { ...state, products }
     }
