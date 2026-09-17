@@ -1388,11 +1388,21 @@ export function calculateAccountBalance(
  * balance is read off the reloads alone. The Accounts form freezes the field for
  * that reason, in the same spirit as an arrived shipment's lines.
  *
- * `adjustments` are deliberately not counted. They are a single scalar with
- * nothing depending on them, and there is no UI to remove one — so blocking on
- * them would trap an account whose opening balance was entered in the wrong
- * currency. `Set Balance to` is the remedy, and it is one action. Every other
- * slice here has no such escape hatch, which is why only they block.
+ * `adjustments` are deliberately not counted, and that is now a weaker
+ * position than it was. The original reason was that nothing could remove one,
+ * so blocking on them would have trapped an account whose opening balance was
+ * entered in the wrong currency; the Accounts ledger now edits and deletes them
+ * outright, so that trap is gone. What is left is the narrower claim that an
+ * adjustment lives on the account record rather than pointing at it from
+ * another slice.
+ *
+ * The hole this leaves is real: an account holding nothing but an opening
+ * adjustment still reports `hasHistory: false`, so its currency stays editable
+ * and switching it reinterprets that figure — a MYR 5,000 opening balance
+ * read as CNY, summed onto the wallet's reload pool. Counting adjustments here
+ * would close it at the cost of making one stray adjustment freeze the field
+ * until the owner deletes it. Left uncounted on purpose; revisit with the
+ * owner, not silently.
  *
  * Takes an options object rather than positional slices: seven of them would be
  * unreadable at the call site. Returns the breakdown as well as the boolean,
@@ -1480,19 +1490,27 @@ export function buildTransactionList(
     })
   })
 
+  // `adjustmentId` marks a row the history can offer for edit and delete, the
+  // same way `transferId` does below. `signedAmount` is the same figure as the
+  // `amount`/`isPositive` pair beside it, which the row needs in that split
+  // form to render; reversing an adjustment is arithmetic on the signed value,
+  // so it is carried rather than reassembled at each of the four call sites.
   accounts.forEach(a => {
     if (a.adjustments && a.adjustments.length > 0) {
       a.adjustments.forEach(adj => {
+        const amount = parseFloat(adj.amount) || 0
         txList.push({
-          id: adj.id,
+          id: `adjust-${adj.id}`,
           date: adj.date,
           type: 'adjustment',
           accountId: a.id,
           accountName: label(a),
           currency: a.currency || 'MYR',
-          amount: Math.abs(adj.amount),
+          amount: Math.abs(amount),
           description: adj.reason || 'Manual adjustment',
-          isPositive: adj.amount >= 0,
+          isPositive: amount >= 0,
+          adjustmentId: adj.id,
+          signedAmount: amount,
         })
       })
     }
