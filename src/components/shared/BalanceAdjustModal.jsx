@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import Modal from './Modal'
 import AccountIcon from './AccountIcon'
 import { useApp } from '../../hooks/useApp'
@@ -7,12 +7,60 @@ import { formatAmount, calculateAccountBalance } from '../../utils/helpers'
 const today = () => new Date().toISOString().split('T')[0]
 const emptyForm = { date: '', type: 'add', amount: '', reason: '' }
 
-export default function BalanceAdjustModal({ accountId, onClose }) {
+const toCents = n => Math.round((parseFloat(n) || 0) * 100) / 100
+
+/**
+ * Record a manual balance adjustment, or edit one already recorded.
+ *
+ * An adjustment is a signed delta stored on the account, so there is no replay
+ * to worry about: `calculateAccountBalance` sums them and an edit moves the
+ * balance by the difference alone. What does need care is the three types,
+ * which are all read against the *current* balance. On an edit that balance
+ * already contains the record being changed, so every type works off
+ * `baseBalance` — the balance with this adjustment taken back out. Without it,
+ * re-saving an untouched adjustment would stack a second copy of itself on top.
+ *
+ * The delta is rounded to cents on the way in. `Set Balance to` derives it by
+ * subtraction, and a balance carrying fractional cents — fee-derived net
+ * revenue does — yields a delta like 43.95465 that the amount input's
+ * `step="0.01"` rejects outright: the record would save once and then be
+ * unopenable, blocking the date and reason edits behind a field the owner has
+ * to retype. Rounding costs sub-cent exactness on `Set Balance to` against such
+ * a balance, which no display resolves anyway, and buys an amount that is
+ * always a real money figure.
+ */
+export default function BalanceAdjustModal({ accountId, adjustmentId, onClose }) {
   const { state, dispatch } = useApp()
   const [form, setForm] = useState({ ...emptyForm, date: today() })
 
   const account = accountId ? state.accounts.find(a => a.id === accountId) : null
   const currency = account?.currency || 'MYR'
+  const existing = adjustmentId
+    ? (account?.adjustments || []).find(adj => adj.id === adjustmentId)
+    : null
+
+  // Re-seed on every open. One component serves the card's "adjust balance"
+  // button and the edit button on an adjustment row in the history, so the form
+  // cannot be initialised once at mount.
+  useEffect(() => {
+    if (!accountId) return
+    setForm(
+      existing
+        ? {
+            date: existing.date,
+            // A `set` adjustment was stored as the delta it worked out to, so
+            // there is nothing left to tell it apart from an add or a subtract
+            // — the sign is the whole record.
+            type: (parseFloat(existing.amount) || 0) < 0 ? 'subtract' : 'add',
+            // Rounded here too: a record stored before the rounding above
+            // would otherwise seed a value its own input rejects.
+            amount: String(Math.abs(toCents(existing.amount))),
+            reason: existing.reason || '',
+          }
+        : { ...emptyForm, date: today() }
+    )
+  }, [accountId, existing])
+
   const currentBalance = accountId
     ? calculateAccountBalance(
         accountId,
@@ -23,38 +71,39 @@ export default function BalanceAdjustModal({ accountId, onClose }) {
         state.transfers
       )
     : 0
+  const baseBalance = currentBalance - (existing ? parseFloat(existing.amount) || 0 : 0)
 
   function set(key, val) {
     setForm(f => ({ ...f, [key]: val }))
   }
 
-  function getPreview() {
+  /** The signed delta the form currently describes, in whole cents. */
+  function getAdjustmentAmount() {
     const amount = parseFloat(form.amount) || 0
-    if (form.type === 'add') return currentBalance + amount
-    if (form.type === 'subtract') return currentBalance - amount
-    if (form.type === 'set') return amount
-    return currentBalance
+    if (form.type === 'add') return amount
+    if (form.type === 'subtract') return -amount
+    if (form.type === 'set') return toCents(amount - baseBalance)
+    return 0
   }
 
   function handleSubmit(e) {
     e.preventDefault()
-    const amount = parseFloat(form.amount) || 0
-    let adjustmentAmount = 0
-    if (form.type === 'add') adjustmentAmount = amount
-    else if (form.type === 'subtract') adjustmentAmount = -amount
-    else if (form.type === 'set') adjustmentAmount = amount - currentBalance
+    const adjustment = {
+      date: form.date,
+      amount: getAdjustmentAmount(),
+      reason: form.reason || 'Manual adjustment',
+    }
 
-    dispatch({
-      type: 'ADJUST_BALANCE',
-      payload: {
-        accountId,
-        adjustment: {
-          date: form.date,
-          amount: adjustmentAmount,
-          reason: form.reason || 'Manual adjustment',
-        },
-      },
-    })
+    if (existing) {
+      // Spread over `existing` so the id — and anything else the record picked
+      // up — survives the edit.
+      dispatch({
+        type: 'UPDATE_ADJUSTMENT',
+        payload: { accountId, adjustment: { ...existing, ...adjustment } },
+      })
+    } else {
+      dispatch({ type: 'ADJUST_BALANCE', payload: { accountId, adjustment } })
+    }
     handleClose()
   }
 
@@ -63,7 +112,7 @@ export default function BalanceAdjustModal({ accountId, onClose }) {
     onClose()
   }
 
-  const preview = getPreview()
+  const preview = baseBalance + getAdjustmentAmount()
 
   return (
     <Modal
@@ -72,7 +121,8 @@ export default function BalanceAdjustModal({ accountId, onClose }) {
       title={
         account ? (
           <>
-            Adjust Balance — <AccountIcon name={account.icon} /> {account.name}
+            {existing ? 'Edit Adjustment' : 'Adjust Balance'} —{' '}
+            <AccountIcon name={account.icon} /> {account.name}
           </>
         ) : (
           'Adjust Balance'
@@ -94,6 +144,12 @@ export default function BalanceAdjustModal({ accountId, onClose }) {
           >
             {formatAmount(currentBalance, currency)}
           </div>
+          {existing && (
+            <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+              Includes this adjustment. Without it the balance is{' '}
+              {formatAmount(baseBalance, currency)}.
+            </span>
+          )}
         </div>
         <div className="form-row">
           <div className="form-group">
@@ -161,7 +217,7 @@ export default function BalanceAdjustModal({ accountId, onClose }) {
             Cancel
           </button>
           <button type="submit" className="btn-primary">
-            Apply Adjustment
+            {existing ? 'Save Changes' : 'Apply Adjustment'}
           </button>
         </div>
       </form>

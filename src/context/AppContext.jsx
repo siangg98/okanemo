@@ -747,6 +747,12 @@ function appReducer(state, action) {
       persist(STORAGE_KEYS.ACCOUNTS, accounts)
       return { ...state, accounts }
     }
+    // An adjustment is stored as a signed delta on the account itself, and
+    // calculateAccountBalance just sums them — so unlike a reload nothing needs
+    // replaying here: editing or removing one moves the balance by exactly the
+    // difference. BalanceAdjustModal computes the delta against the balance
+    // *excluding* the record being edited, which is what keeps `Set balance to`
+    // meaning the same thing on an edit as it does on a fresh adjustment.
     case 'ADJUST_BALANCE': {
       // payload: { accountId, adjustment: { date, amount, reason } }
       const accounts = state.accounts.map(a => {
@@ -756,6 +762,34 @@ function appReducer(state, action) {
           { ...action.payload.adjustment, id: generateId() },
         ]
         return { ...a, adjustments }
+      })
+      persist(STORAGE_KEYS.ACCOUNTS, accounts)
+      return { ...state, accounts }
+    }
+    case 'UPDATE_ADJUSTMENT': {
+      // payload: { accountId, adjustment: { id, date, amount, reason } }
+      const { accountId, adjustment } = action.payload
+      const accounts = state.accounts.map(a => {
+        if (a.id !== accountId) return a
+        return {
+          ...a,
+          adjustments: (a.adjustments || []).map(adj =>
+            adj.id === adjustment.id ? { ...adj, ...adjustment } : adj
+          ),
+        }
+      })
+      persist(STORAGE_KEYS.ACCOUNTS, accounts)
+      return { ...state, accounts }
+    }
+    case 'DELETE_ADJUSTMENT': {
+      // payload: { accountId, adjustmentId }
+      const { accountId, adjustmentId } = action.payload
+      const accounts = state.accounts.map(a => {
+        if (a.id !== accountId) return a
+        return {
+          ...a,
+          adjustments: (a.adjustments || []).filter(adj => adj.id !== adjustmentId),
+        }
       })
       persist(STORAGE_KEYS.ACCOUNTS, accounts)
       return { ...state, accounts }

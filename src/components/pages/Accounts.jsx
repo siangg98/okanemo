@@ -64,13 +64,19 @@ export default function Accounts() {
   const [view, setView] = useState('list')
   const [editId, setEditId] = useState(null)
   const [accountForm, setAccountForm] = useState(emptyAccountForm)
-  const [adjustAccountId, setAdjustAccountId] = useState(null)
+  // Either closed, opening blank against an account (the card's own button) or
+  // editing an adjustment off the ledger — the same shape the transfer modal
+  // state uses, and for the same reason.
+  const [adjust, setAdjust] = useState({ accountId: null, adjustmentId: null })
   const [confirmDelete, setConfirmDelete] = useState(null)
   // One object rather than three pieces of state: the transfer modal is either
   // closed, opening blank, opening with a From account already chosen (the
   // card's own button) or editing a transfer off the ledger.
   const [transfer, setTransfer] = useState({ open: false, transferId: null, fromAccountId: '' })
   const [confirmDeleteTransfer, setConfirmDeleteTransfer] = useState(null)
+  // The ledger row itself, not just an id: it already carries the account, the
+  // signed amount and the reason the message needs.
+  const [confirmDeleteAdjustment, setConfirmDeleteAdjustment] = useState(null)
 
   // An account's currency stops being a label the moment anything references it
   // — see accountUsage for why changing it reinterprets history rather than
@@ -145,6 +151,18 @@ export default function Accounts() {
     setConfirmDelete(account)
   }
 
+  function openAdjust(accountId) {
+    setAdjust({ accountId, adjustmentId: null })
+  }
+
+  function openAdjustEdit(tx) {
+    setAdjust({ accountId: tx.accountId, adjustmentId: tx.adjustmentId })
+  }
+
+  function closeAdjust() {
+    setAdjust({ accountId: null, adjustmentId: null })
+  }
+
   function openTransfer(fromAccountId = '') {
     setTransfer({ open: true, transferId: null, fromAccountId })
   }
@@ -158,6 +176,15 @@ export default function Accounts() {
   }
 
   const accountName = id => state.accounts.find(a => a.id === id)?.name || 'account'
+  const balanceOf = id =>
+    calculateAccountBalance(
+      id,
+      state.accounts,
+      state.expenses,
+      state.sales,
+      state.reloads,
+      state.transfers
+    )
   const transferToDelete = state.transfers.find(t => t.id === confirmDeleteTransfer)
   // Names resolved through `accountName` so a transfer naming an account that
   // has since been deleted reads as plain text rather than "undefined".
@@ -165,6 +192,21 @@ export default function Accounts() {
     ? `Delete this ${formatMYR(transferToDelete.amount)} transfer from ` +
       `${accountName(transferToDelete.fromAccountId)} to ` +
       `${accountName(transferToDelete.toAccountId)}? Both balances will be restored.`
+    : ''
+
+  // An adjustment is a signed delta, so removing it moves the balance by
+  // exactly that much — worth spelling out, since the row shows the amount
+  // unsigned and nothing else in the app writes the figure back.
+  const deleteAdjustmentMessage = confirmDeleteAdjustment
+    ? `Delete the ${confirmDeleteAdjustment.signedAmount >= 0 ? '+' : '−'}` +
+      `${formatAmount(Math.abs(confirmDeleteAdjustment.signedAmount), confirmDeleteAdjustment.currency)} ` +
+      `adjustment "${confirmDeleteAdjustment.description}" on ` +
+      `${formatDate(confirmDeleteAdjustment.date)}? ` +
+      `${accountName(confirmDeleteAdjustment.accountId)} goes to ` +
+      `${formatAmount(
+        balanceOf(confirmDeleteAdjustment.accountId) - confirmDeleteAdjustment.signedAmount,
+        confirmDeleteAdjustment.currency
+      )}.`
     : ''
 
   const transactions = useMemo(
@@ -227,7 +269,7 @@ export default function Accounts() {
                     </div>
                     <div className="account-actions">
                       <Button variant="icon" onClick={() => openEdit(a)} title="Edit"><Pencil /></Button>
-                      <Button variant="icon" onClick={() => setAdjustAccountId(a.id)} title="Adjust Balance"><Coins /></Button>
+                      <Button variant="icon" onClick={() => openAdjust(a.id)} title="Adjust Balance"><Coins /></Button>
                       {currency === 'MYR' && (
                         <Button variant="icon" onClick={() => openTransfer(a.id)} title="Transfer from this account"><ArrowRightLeft /></Button>
                       )}
@@ -295,6 +337,25 @@ export default function Accounts() {
                       delete
                       onClick={() => setConfirmDeleteTransfer(tx.transferId)}
                       title="Delete transfer"
+                    >
+                      <Trash2 />
+                    </Button>
+                  </>
+                )}
+                {tx.adjustmentId && (
+                  <>
+                    <Button
+                      variant="icon"
+                      onClick={() => openAdjustEdit(tx)}
+                      title="Edit adjustment"
+                    >
+                      <Pencil />
+                    </Button>
+                    <Button
+                      variant="icon"
+                      delete
+                      onClick={() => setConfirmDeleteAdjustment(tx)}
+                      title="Delete adjustment"
                     >
                       <Trash2 />
                     </Button>
@@ -379,7 +440,11 @@ export default function Accounts() {
       </div>
 
       {/* Modals */}
-      <BalanceAdjustModal accountId={adjustAccountId} onClose={() => setAdjustAccountId(null)} />
+      <BalanceAdjustModal
+        accountId={adjust.accountId}
+        adjustmentId={adjust.adjustmentId}
+        onClose={closeAdjust}
+      />
       <TransferModal
         open={transfer.open}
         transferId={transfer.transferId}
@@ -399,6 +464,21 @@ export default function Accounts() {
                 : '')
             : ''
         }
+      />
+      <ConfirmModal
+        open={!!confirmDeleteAdjustment}
+        onClose={() => setConfirmDeleteAdjustment(null)}
+        onConfirm={() =>
+          dispatch({
+            type: 'DELETE_ADJUSTMENT',
+            payload: {
+              accountId: confirmDeleteAdjustment.accountId,
+              adjustmentId: confirmDeleteAdjustment.adjustmentId,
+            },
+          })
+        }
+        title="Delete Adjustment"
+        message={deleteAdjustmentMessage}
       />
       <ConfirmModal
         open={!!confirmDeleteTransfer}
