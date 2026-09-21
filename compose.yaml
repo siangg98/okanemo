@@ -1,0 +1,12 @@
+services:
+  okanemo:
+    build: .
+    ports:
+      - "127.0.0.1:8888:8080"
+    volumes:
+      - okanemo-data:/data
+      - ./backups:/backups
+    restart: unless-stopped
+
+volumes:
+  okanemo-data:

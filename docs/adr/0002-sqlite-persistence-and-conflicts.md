@@ -1,0 +1,3 @@
+# Persist the dataset in SQLite and reject stale writes
+
+The shared business dataset will live as one versioned snapshot in SQLite in a Docker volume. Saves will carry a revision so an outdated tab cannot overwrite newer work; the app will show an error when a save is rejected or storage is unavailable. An idle tab will refresh when it regains focus, while an open form keeps its entered values. We chose transactional storage and explicit conflict handling because changes to orders, wallets, stock, and finances can affect several records together. Separate SQL tables and live collaboration would add complexity without serving the current single-business workflow.

@@ -1,12 +1,9 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Check, Sparkles, Download, Upload, Trash2 } from 'lucide-react'
 import { useApp } from '../../hooks/useApp'
-import { STORAGE_KEYS } from '../../utils/constants'
 import { collectSKUs, generateSKU } from '../../utils/helpers'
 import ConfirmModal from '../shared/ConfirmModal'
 import Button from '../shared/Button'
-
-const ALL_KEYS = Object.values(STORAGE_KEYS)
 
 function exportBackup(state) {
   const data = {
@@ -31,49 +28,18 @@ function exportBackup(state) {
   URL.revokeObjectURL(url)
 }
 
-function importBackup(json, dispatch) {
-  let data
-  try {
-    data = JSON.parse(json)
-  } catch {
-    alert('Invalid JSON file.')
-    return false
-  }
-
-  const expected = ['suppliers', 'shipments', 'products', 'sales', 'expenses', 'accounts']
-  for (const key of expected) {
-    if (!Array.isArray(data[key])) {
-      alert(`Invalid backup: missing or malformed "${key}" field.`)
-      return false
-    }
-  }
-
-  // Slices added after v1 — absent from older backups, so default rather than reject
-  const reloads = Array.isArray(data.reloads) ? data.reloads : []
-  const orders = Array.isArray(data.orders) ? data.orders : []
-  const transfers = Array.isArray(data.transfers) ? data.transfers : []
-
-  // Write directly to localStorage then reload
-  localStorage.setItem(STORAGE_KEYS.SUPPLIERS, JSON.stringify(data.suppliers))
-  localStorage.setItem(STORAGE_KEYS.SHIPMENTS, JSON.stringify(data.shipments))
-  localStorage.setItem(STORAGE_KEYS.PRODUCTS, JSON.stringify(data.products))
-  localStorage.setItem(STORAGE_KEYS.SALES, JSON.stringify(data.sales))
-  localStorage.setItem(STORAGE_KEYS.EXPENSES, JSON.stringify(data.expenses))
-  localStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(data.accounts))
-  localStorage.setItem(STORAGE_KEYS.RELOADS, JSON.stringify(reloads))
-  localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(orders))
-  localStorage.setItem(STORAGE_KEYS.TRANSFERS, JSON.stringify(transfers))
-
-  window.location.reload()
-  return true
-}
-
 export default function Settings() {
-  const { state, dispatch } = useApp()
+  const { state, dispatch, restoreDataset, restoreBackup, clearDataset, listBackups } = useApp()
   const fileRef = useRef(null)
   const [confirmClear, setConfirmClear] = useState(false)
   const [importError, setImportError] = useState('')
   const [skuGenerated, setSkuGenerated] = useState(null)
+  const [backups, setBackups] = useState([])
+  const [selectedBackup, setSelectedBackup] = useState('')
+
+  useEffect(() => {
+    listBackups().then(result => setBackups(result.backups)).catch(error => setImportError(error.message))
+  }, [listBackups])
 
   function handleGenerateMissingSKUs() {
     const missing = state.products.filter(p => !p.sku)
@@ -91,22 +57,43 @@ export default function Settings() {
     exportBackup(state)
   }
 
-  function handleFileChange(e) {
+  async function handleFileChange(e) {
     const file = e.target.files[0]
     if (!file) return
     setImportError('')
-    const reader = new FileReader()
-    reader.onload = ev => {
-      const ok = importBackup(ev.target.result, null)
-      if (!ok) setImportError('Restore failed — see alert for details.')
+    try {
+      const data = JSON.parse(await file.text())
+      if (window.prompt('This replaces the shared dataset. Type RESTORE to continue:') !== 'RESTORE') return
+      await restoreDataset(data)
+      const result = await listBackups()
+      setBackups(result.backups)
+    } catch (error) {
+      setImportError(error.message)
+    } finally {
+      e.target.value = ''
     }
-    reader.readAsText(file)
-    e.target.value = ''
   }
 
-  function handleClearData() {
-    ALL_KEYS.forEach(k => localStorage.removeItem(k))
-    window.location.reload()
+  async function handleClearData() {
+    if (window.prompt('Type CLEAR to delete the shared dataset:') !== 'CLEAR') return
+    try {
+      await clearDataset()
+    } catch (error) {
+      setImportError(error.message)
+    }
+  }
+
+  async function handleRestoreStoredBackup() {
+    if (!selectedBackup) return
+    if (window.prompt(`Replace the shared dataset with ${selectedBackup}? Type RESTORE:`) !== 'RESTORE') return
+    try {
+      setImportError('')
+      await restoreBackup(selectedBackup)
+      const result = await listBackups()
+      setBackups(result.backups)
+    } catch (error) {
+      setImportError(error.message)
+    }
   }
 
   const counts = {
@@ -188,7 +175,7 @@ export default function Settings() {
           <div className="settings-item">
             <div className="settings-info">
               <h4>Export Backup</h4>
-              <p>Download all your data as a JSON file. Keep this safe — it contains everything.</p>
+              <p>Download the shared dataset as a JSON file.</p>
             </div>
             <Button variant="primary" onClick={handleExport}>
               <Download className="icon-btn" /> Export JSON
@@ -201,7 +188,7 @@ export default function Settings() {
                 Upload a previously exported JSON file. <strong>This overwrites all current data.</strong>
               </p>
               {importError && (
-                <p style={{ color: 'var(--danger)', marginTop: 4 }}>{importError}</p>
+                <p role="alert" style={{ color: 'var(--danger)', marginTop: 4 }}>{importError}</p>
               )}
             </div>
             <input
@@ -215,6 +202,17 @@ export default function Settings() {
               <Upload className="icon-btn" /> Import JSON
             </Button>
           </div>
+          <div className="settings-item">
+            <div className="settings-info">
+              <h4>Stored Backups</h4>
+              <p>Daily copies are kept for 30 days in the host backup folder. Copy that folder off-device.</p>
+            </div>
+            <select value={selectedBackup} onChange={event => setSelectedBackup(event.target.value)} aria-label="Stored backup">
+              <option value="">Select a backup</option>
+              {backups.map(name => <option key={name} value={name}>{name}</option>)}
+            </select>
+            <Button variant="secondary" onClick={handleRestoreStoredBackup} disabled={!selectedBackup}>Restore</Button>
+          </div>
         </div>
       </div>
 
@@ -225,7 +223,7 @@ export default function Settings() {
           <div className="settings-item">
             <div className="settings-info">
               <h4>Clear All Data</h4>
-              <p>Permanently delete all records from this device. Export a backup first.</p>
+              <p>Delete the shared dataset. A backup is made in the host folder first.</p>
             </div>
             <Button
               variant="danger"
@@ -253,7 +251,7 @@ export default function Settings() {
         onClose={() => setConfirmClear(false)}
         onConfirm={handleClearData}
         title="Clear All Data"
-        message="This will permanently delete all suppliers, reloads, shipments, products, sales, expenses, and accounts. Export a backup first. This cannot be undone."
+        message="This deletes the shared dataset for every browser. A pre-clear backup will be saved in the host folder."
       />
     </div>
   )
