@@ -35,7 +35,6 @@ import {
 } from '../utils/migrations'
 import { DEFAULT_ACCOUNT_ICON, DEFAULT_WALLET_ICON } from '../utils/accountIcons'
 import { storageApi } from '../utils/storageApi'
-import { readLegacyBrowserData } from '../utils/legacyBrowserData'
 
 // eslint-disable-next-line react-refresh/only-export-components
 export const AppContext = createContext(null)
@@ -832,13 +831,6 @@ function StorageSetup({ revision, onReady }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const fileRef = useRef(null)
-  const [legacy] = useState(() => {
-    try {
-      return { result: readLegacyBrowserData(window.localStorage), error: '' }
-    } catch (cause) {
-      return { result: null, error: cause.message }
-    }
-  })
 
   async function start(dataset) {
     setBusy(true)
@@ -868,17 +860,7 @@ function StorageSetup({ revision, onReady }) {
     <main className="storage-gate">
       <div className="storage-gate-card">
         <h1>Set up Okanemo</h1>
-        <p>This installation has no business data yet. Recover records stored by this browser, import a JSON backup, or start fresh.</p>
-        {legacy.result && (
-          <div className="storage-recovery">
-            <strong>Old browser data found</strong>
-            <p>{legacy.result.recordCount} records were found in {legacy.result.keyCount} Okanemo storage lists at <code>{window.location.origin}</code>.</p>
-            <button className="btn-primary" disabled={busy} onClick={() => start(loadInitialState(legacy.result.dataset))}>
-              Recover Browser Data
-            </button>
-          </div>
-        )}
-        {legacy.error && <p role="alert" className="storage-error">{legacy.error}</p>}
+        <p>This installation has no business data yet. Import a JSON backup or start fresh.</p>
         {error && <p role="alert" className="storage-error">{error}</p>}
         <div className="storage-gate-actions">
           <input ref={fileRef} type="file" accept=".json,application/json" onChange={importFile} disabled={busy} hidden />
@@ -887,7 +869,6 @@ function StorageSetup({ revision, onReady }) {
             Start Fresh
           </button>
         </div>
-        <p className="storage-hint">Browser data is tied to the exact address. If it is not detected, reopen this app in Firefox using the same address and port you used before.</p>
       </div>
     </main>
   )
