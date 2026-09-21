@@ -1,4 +1,4 @@
-import { createContext, useReducer } from 'react'
+import { createContext, useCallback, useEffect, useRef, useState } from 'react'
 import {
   generateId,
   collectSKUs,
@@ -34,15 +34,25 @@ import {
   migrateAccountIconNames,
 } from '../utils/migrations'
 import { DEFAULT_ACCOUNT_ICON, DEFAULT_WALLET_ICON } from '../utils/accountIcons'
+import { storageApi } from '../utils/storageApi'
+import { readLegacyBrowserData } from '../utils/legacyBrowserData'
 
 // eslint-disable-next-line react-refresh/only-export-components
 export const AppContext = createContext(null)
 
-// ===== Load from localStorage with migrations =====
-function loadInitialState() {
+// Existing migrations run against a temporary store. The returned dataset is
+// saved through the API if a migration changed it.
+function loadInitialState(input = {}) {
+  const stored = Object.fromEntries(
+    Object.entries(STORAGE_KEYS).map(([name, key]) => [key, JSON.stringify(input[name.toLowerCase()] ?? [])])
+  )
+  const memoryStorage = {
+    getItem: key => stored[key],
+    setItem: (key, value) => { stored[key] = value },
+  }
   const load = (key, fallback = []) => {
     try {
-      const raw = localStorage.getItem(key)
+      const raw = memoryStorage.getItem(key)
       return raw ? JSON.parse(raw) : fallback
     } catch {
       return fallback
@@ -65,13 +75,13 @@ function loadInitialState() {
   const smResult = migrateShipmentsToSupplierGroups(shipments)
   shipments = smResult.shipments
   if (smResult.migrated) {
-    localStorage.setItem(STORAGE_KEYS.SHIPMENTS, JSON.stringify(shipments))
+    memoryStorage.setItem(STORAGE_KEYS.SHIPMENTS, JSON.stringify(shipments))
   }
 
   const bmResult = migrateBatchSupplierGroupIndex(products)
   products = bmResult.products
   if (bmResult.migrated) {
-    localStorage.setItem(STORAGE_KEYS.PRODUCTS, JSON.stringify(products))
+    memoryStorage.setItem(STORAGE_KEYS.PRODUCTS, JSON.stringify(products))
   }
 
   // Re-derive the SKUs the old eight-character head clip mangled. Runs first:
@@ -80,7 +90,7 @@ function loadInitialState() {
   const csResult = migrateClippedSKUs(products)
   products = csResult.products
   if (csResult.migrated) {
-    localStorage.setItem(STORAGE_KEYS.PRODUCTS, JSON.stringify(products))
+    memoryStorage.setItem(STORAGE_KEYS.PRODUCTS, JSON.stringify(products))
   }
 
   // Spell variation SKU suffixes out in full (BLAC → BLACK). Display only, so
@@ -88,20 +98,20 @@ function loadInitialState() {
   const vsResult = migrateVariationSKUs(products)
   products = vsResult.products
   if (vsResult.migrated) {
-    localStorage.setItem(STORAGE_KEYS.PRODUCTS, JSON.stringify(products))
+    memoryStorage.setItem(STORAGE_KEYS.PRODUCTS, JSON.stringify(products))
   }
 
   const gcResult = migrateGroupCurrency(shipments)
   shipments = gcResult.shipments
   if (gcResult.migrated) {
-    localStorage.setItem(STORAGE_KEYS.SHIPMENTS, JSON.stringify(shipments))
+    memoryStorage.setItem(STORAGE_KEYS.SHIPMENTS, JSON.stringify(shipments))
   }
 
   // Add the consolidation lifecycle to pre-existing shipments (purely additive)
   const slResult = migrateShipmentLifecycle(shipments)
   shipments = slResult.shipments
   if (slResult.migrated) {
-    localStorage.setItem(STORAGE_KEYS.SHIPMENTS, JSON.stringify(shipments))
+    memoryStorage.setItem(STORAGE_KEYS.SHIPMENTS, JSON.stringify(shipments))
   }
 
   // Initialize default accounts if none exist: the bank the money comes from,
@@ -111,14 +121,14 @@ function loadInitialState() {
       { id: 'default', name: 'Bank Account', icon: DEFAULT_ACCOUNT_ICON, currency: 'MYR', isDefault: true },
       { id: 'agent-wallet', name: 'Agent Wallet', icon: DEFAULT_WALLET_ICON, currency: 'CNY', isDefault: false },
     ]
-    localStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(accounts))
+    memoryStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(accounts))
   }
 
   // Backfill account currency (and seed a wallet for pre-existing users)
   const acResult = migrateAccountCurrency(accounts)
   accounts = acResult.accounts
   if (acResult.migrated) {
-    localStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(accounts))
+    memoryStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(accounts))
   }
 
   // Emoji account icons → Lucide icon names. Needs the currency backfill above,
@@ -126,7 +136,7 @@ function loadInitialState() {
   const aiResult = migrateAccountIconNames(accounts)
   accounts = aiResult.accounts
   if (aiResult.migrated) {
-    localStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(accounts))
+    memoryStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(accounts))
   }
 
   // Reloads are transfers, not expenses — point them at a wallet and drop the
@@ -134,15 +144,15 @@ function loadInitialState() {
   const rwResult = migrateReloadWallet(reloads, accounts, expenses)
   expenses = rwResult.expenses
   if (rwResult.migrated) {
-    localStorage.setItem(STORAGE_KEYS.RELOADS, JSON.stringify(reloads))
-    localStorage.setItem(STORAGE_KEYS.EXPENSES, JSON.stringify(expenses))
+    memoryStorage.setItem(STORAGE_KEYS.RELOADS, JSON.stringify(reloads))
+    memoryStorage.setItem(STORAGE_KEYS.EXPENSES, JSON.stringify(expenses))
   }
 
   // Fold reload fees into myrPaid so it always means the whole outlay. Must run
   // before anything reads a balance or a cost rate off these records.
   const rfResult = migrateReloadFeesInclusive(reloads)
   if (rfResult.migrated) {
-    localStorage.setItem(STORAGE_KEYS.RELOADS, JSON.stringify(reloads))
+    memoryStorage.setItem(STORAGE_KEYS.RELOADS, JSON.stringify(reloads))
   }
 
   // Backfill accountId on existing sales (needs accounts to exist first)
@@ -155,7 +165,7 @@ function loadInitialState() {
   sales = scResult.sales
 
   if (saResult.migrated || scResult.migrated) {
-    localStorage.setItem(STORAGE_KEYS.SALES, JSON.stringify(sales))
+    memoryStorage.setItem(STORAGE_KEYS.SALES, JSON.stringify(sales))
   }
 
   // Mark pre-existing expenses as MYR. Must run before the wallet replay —
@@ -163,18 +173,18 @@ function loadInitialState() {
   const ecResult = migrateExpenseCurrency(expenses)
   expenses = ecResult.expenses
   if (ecResult.migrated) {
-    localStorage.setItem(STORAGE_KEYS.EXPENSES, JSON.stringify(expenses))
+    memoryStorage.setItem(STORAGE_KEYS.EXPENSES, JSON.stringify(expenses))
   }
 
   // Bind order lines to a product id. Must run before the wallet replay, which
   // rewrites the order records this backfills into.
   const opResult = migrateOrderItemProductId(orders, products)
   if (opResult.migrated) {
-    localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(orders))
+    memoryStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(orders))
   }
 
   // Replay the wallet on load. Reducer writes keep it consistent during a
-  // session, but a restored backup — or anything that wrote localStorage
+  // session, but a restored backup — or any imported snapshot
   // directly — can arrive stale. The replay is idempotent, so this is a no-op
   // when the data is already correct.
   const walletResult = recomputeReloadDraws(reloads, orders, expenses)
@@ -183,9 +193,9 @@ function loadInitialState() {
     JSON.stringify(walletResult.orders) !== JSON.stringify(orders) ||
     JSON.stringify(walletResult.expenses) !== JSON.stringify(expenses)
   ) {
-    localStorage.setItem(STORAGE_KEYS.RELOADS, JSON.stringify(walletResult.reloads))
-    localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(walletResult.orders))
-    localStorage.setItem(STORAGE_KEYS.EXPENSES, JSON.stringify(walletResult.expenses))
+    memoryStorage.setItem(STORAGE_KEYS.RELOADS, JSON.stringify(walletResult.reloads))
+    memoryStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(walletResult.orders))
+    memoryStorage.setItem(STORAGE_KEYS.EXPENSES, JSON.stringify(walletResult.expenses))
   }
 
   // Settle the stocked-in flag on load, for the same reason the wallet is
@@ -195,7 +205,7 @@ function loadInitialState() {
   // migration it needs no marker flag to stay idempotent.
   const stockedOrders = syncOrderStockStatuses(walletResult.orders, shipments)
   if (stockedOrders !== walletResult.orders) {
-    localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(stockedOrders))
+    memoryStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(stockedOrders))
   }
 
   return {
@@ -212,17 +222,12 @@ function loadInitialState() {
 }
 
 // ===== Reducer =====
-function persist(key, data) {
-  localStorage.setItem(key, JSON.stringify(data))
-}
-
 /**
- * Replay the wallet after any change to reloads, orders or expenses, then
- * persist all three slices. Keeps `remainingForeign`, every order's rate
+ * Replay the wallet after any change to reloads, orders or expenses. Keeps `remainingForeign`, every order's rate
  * snapshot and every foreign expense's derived MYR value consistent no matter
  * what order things were entered in.
  */
-function persistWallet(state, nextReloads, nextOrders, nextExpenses = state.expenses) {
+function recomputeWallet(state, nextReloads, nextOrders, nextExpenses = state.expenses) {
   const { reloads, orders, expenses } = recomputeReloadDraws(
     nextReloads,
     nextOrders,
@@ -231,20 +236,16 @@ function persistWallet(state, nextReloads, nextOrders, nextExpenses = state.expe
   // Editing an order's quantities can settle or unsettle it against the boxes
   // it is already in, so the stocked-in flag is replayed here too.
   const staged = syncOrderStockStatuses(orders, state.shipments)
-  persist(STORAGE_KEYS.RELOADS, reloads)
-  persist(STORAGE_KEYS.ORDERS, staged)
-  persist(STORAGE_KEYS.EXPENSES, expenses)
   return { ...state, reloads, orders: staged, expenses }
 }
 
 /**
  * Shipments moving is the other half: a box arriving stocks its orders in, and
- * deleting or unpacking one walks them back. Persists the orders slice and
- * hands it back for the caller to fold into state.
+ * deleting or unpacking one walks them back. Hands the updated orders back
+ * for the caller to fold into state.
  */
-function persistOrderStock(orders, shipments) {
+function syncOrderStock(orders, shipments) {
   const synced = syncOrderStockStatuses(orders, shipments)
-  persist(STORAGE_KEYS.ORDERS, synced)
   return synced
 }
 
@@ -446,19 +447,16 @@ function appReducer(state, action) {
     // --- Suppliers ---
     case 'ADD_SUPPLIER': {
       const suppliers = [...state.suppliers, { ...action.payload, id: generateId() }]
-      persist(STORAGE_KEYS.SUPPLIERS, suppliers)
       return { ...state, suppliers }
     }
     case 'UPDATE_SUPPLIER': {
       const suppliers = state.suppliers.map(s =>
         s.id === action.payload.id ? action.payload : s
       )
-      persist(STORAGE_KEYS.SUPPLIERS, suppliers)
       return { ...state, suppliers }
     }
     case 'DELETE_SUPPLIER': {
       const suppliers = state.suppliers.filter(s => s.id !== action.payload)
-      persist(STORAGE_KEYS.SUPPLIERS, suppliers)
       return { ...state, suppliers }
     }
 
@@ -470,17 +468,17 @@ function appReducer(state, action) {
     case 'ADD_RELOAD': {
       const amountForeign = parseFloat(action.payload.amountForeign) || 0
       const reload = { ...action.payload, id: generateId(), amountForeign }
-      return persistWallet(state, [...state.reloads, reload], state.orders)
+      return recomputeWallet(state, [...state.reloads, reload], state.orders)
     }
     case 'UPDATE_RELOAD': {
       const amountForeign = parseFloat(action.payload.amountForeign) || 0
       const updated = { ...action.payload, amountForeign }
       const reloads = state.reloads.map(r => (r.id === updated.id ? updated : r))
-      return persistWallet(state, reloads, state.orders)
+      return recomputeWallet(state, reloads, state.orders)
     }
     case 'DELETE_RELOAD': {
       const reloads = state.reloads.filter(r => r.id !== action.payload)
-      return persistWallet(state, reloads, state.orders)
+      return recomputeWallet(state, reloads, state.orders)
     }
 
     // --- Purchase orders ---
@@ -489,15 +487,15 @@ function appReducer(state, action) {
     // when anything is edited or back-dated.
     case 'ADD_ORDER': {
       const order = { ...action.payload, id: generateId() }
-      return persistWallet(state, state.reloads, [...state.orders, order])
+      return recomputeWallet(state, state.reloads, [...state.orders, order])
     }
     case 'UPDATE_ORDER': {
       const orders = state.orders.map(o => (o.id === action.payload.id ? action.payload : o))
-      return persistWallet(state, state.reloads, orders)
+      return recomputeWallet(state, state.reloads, orders)
     }
     case 'DELETE_ORDER': {
       const orders = state.orders.filter(o => o.id !== action.payload)
-      return persistWallet(state, state.reloads, orders)
+      return recomputeWallet(state, state.reloads, orders)
     }
     case 'SET_ORDER_STATUS': {
       // payload: { id, status }
@@ -505,7 +503,7 @@ function appReducer(state, action) {
         o.id === action.payload.id ? { ...o, status: action.payload.status } : o
       )
       // Cancelling releases the order's yuan back into the wallet
-      return persistWallet(state, state.reloads, orders)
+      return recomputeWallet(state, state.reloads, orders)
     }
 
     // --- Consolidated shipments ---
@@ -519,9 +517,7 @@ function appReducer(state, action) {
       const shipment = { ...action.payload, id: generateId() }
       const shipments = [...state.shipments, shipment]
       const expenses = syncFreightExpense(state.expenses, shipment)
-      const orders = persistOrderStock(state.orders, shipments)
-      persist(STORAGE_KEYS.SHIPMENTS, shipments)
-      persist(STORAGE_KEYS.EXPENSES, expenses)
+      const orders = syncOrderStock(state.orders, shipments)
       return { ...state, shipments, expenses, orders }
     }
     case 'UPDATE_SHIPMENT': {
@@ -529,9 +525,7 @@ function appReducer(state, action) {
         s.id === action.payload.id ? action.payload : s
       )
       const expenses = syncFreightExpense(state.expenses, action.payload)
-      const orders = persistOrderStock(state.orders, shipments)
-      persist(STORAGE_KEYS.SHIPMENTS, shipments)
-      persist(STORAGE_KEYS.EXPENSES, expenses)
+      const orders = syncOrderStock(state.orders, shipments)
       return { ...state, shipments, expenses, orders }
     }
     case 'MARK_SHIPMENT_ARRIVED': {
@@ -555,11 +549,8 @@ function appReducer(state, action) {
       const shipments = state.shipments.map(s => (s.id === arrived.id ? arrived : s))
       const products = materializeStock(arrived, state.orders, state.products)
       const expenses = syncFreightExpense(state.expenses, arrived)
-      const orders = persistOrderStock(state.orders, shipments)
+      const orders = syncOrderStock(state.orders, shipments)
 
-      persist(STORAGE_KEYS.SHIPMENTS, shipments)
-      persist(STORAGE_KEYS.PRODUCTS, products)
-      persist(STORAGE_KEYS.EXPENSES, expenses)
       return { ...state, shipments, products, expenses, orders }
     }
     case 'DELETE_SHIPMENT': {
@@ -567,13 +558,10 @@ function appReducer(state, action) {
       const expenses = state.expenses.filter(e => e.shipmentId !== action.payload)
       // Its lines are free to consolidate again, so any order it had stocked in
       // walks back to the warehouse.
-      const orders = persistOrderStock(state.orders, shipments)
+      const orders = syncOrderStock(state.orders, shipments)
       // Also drop the batches it created — leaving them orphaned would silently
       // fall back to a bare purchase price and understate cost.
       const products = removeBatchesForShipment(state.products, action.payload)
-      persist(STORAGE_KEYS.SHIPMENTS, shipments)
-      persist(STORAGE_KEYS.EXPENSES, expenses)
-      persist(STORAGE_KEYS.PRODUCTS, products)
       return { ...state, shipments, expenses, products, orders }
     }
 
@@ -598,7 +586,6 @@ function appReducer(state, action) {
         }
       }
       const products = [...state.products, product]
-      persist(STORAGE_KEYS.PRODUCTS, products)
       return { ...state, products }
     }
     case 'UPDATE_PRODUCT': {
@@ -615,15 +602,12 @@ function appReducer(state, action) {
           ? action.payload
           : rebuildVariationSKUs(action.payload, p.sku)
       })
-      persist(STORAGE_KEYS.PRODUCTS, products)
       return { ...state, products }
     }
     case 'DELETE_PRODUCT': {
       const products = state.products.filter(p => p.id !== action.payload)
       // Also remove legacy single-product sales for this product
       const sales = state.sales.filter(s => s.productId !== action.payload)
-      persist(STORAGE_KEYS.PRODUCTS, products)
-      persist(STORAGE_KEYS.SALES, sales)
       return { ...state, products, sales }
     }
     case 'RESTOCK_PRODUCT': {
@@ -641,7 +625,6 @@ function appReducer(state, action) {
         const batches = [...(p.batches || []), { ...action.payload.batch, id: generateId() }]
         return { ...p, batches }
       })
-      persist(STORAGE_KEYS.PRODUCTS, products)
       return { ...state, products }
     }
     case 'ADD_VARIATION': {
@@ -651,7 +634,6 @@ function appReducer(state, action) {
         const variation = { ...action.payload.variation, id: action.payload.variation.id || generateId(), batches: [] }
         return { ...p, variations: [...(p.variations || []), variation] }
       })
-      persist(STORAGE_KEYS.PRODUCTS, products)
       return { ...state, products }
     }
     case 'DELETE_VARIATION': {
@@ -660,7 +642,6 @@ function appReducer(state, action) {
         if (p.id !== action.payload.productId) return p
         return { ...p, variations: p.variations.filter(v => v.id !== action.payload.variationId) }
       })
-      persist(STORAGE_KEYS.PRODUCTS, products)
       return { ...state, products }
     }
 
@@ -675,8 +656,6 @@ function appReducer(state, action) {
 
       const sale = { ...action.payload, items: drawn.items, id: generateId() }
       const sales = [...state.sales, sale]
-      persist(STORAGE_KEYS.SALES, sales)
-      persist(STORAGE_KEYS.PRODUCTS, drawn.products)
       return { ...state, sales, products: drawn.products }
     }
     case 'UPDATE_SALE': {
@@ -695,8 +674,6 @@ function appReducer(state, action) {
 
       const updated = { ...action.payload, items: drawn.items }
       const sales = state.sales.map(s => (s.id === updated.id ? updated : s))
-      persist(STORAGE_KEYS.SALES, sales)
-      persist(STORAGE_KEYS.PRODUCTS, drawn.products)
       return { ...state, sales, products: drawn.products }
     }
     case 'DELETE_SALE': {
@@ -705,8 +682,6 @@ function appReducer(state, action) {
 
       const products = reverseSaleDraws(state.products, sale)
       const sales = state.sales.filter(s => s.id !== action.payload)
-      persist(STORAGE_KEYS.SALES, sales)
-      persist(STORAGE_KEYS.PRODUCTS, products)
       return { ...state, sales, products }
     }
 
@@ -716,35 +691,32 @@ function appReducer(state, action) {
     // whichever reloads funded it, not from anything typed in.
     case 'ADD_EXPENSE': {
       const expenses = [...state.expenses, { ...action.payload, id: generateId() }]
-      return persistWallet(state, state.reloads, state.orders, expenses)
+      return recomputeWallet(state, state.reloads, state.orders, expenses)
     }
     case 'UPDATE_EXPENSE': {
       const expenses = state.expenses.map(e =>
         e.id === action.payload.id ? action.payload : e
       )
-      return persistWallet(state, state.reloads, state.orders, expenses)
+      return recomputeWallet(state, state.reloads, state.orders, expenses)
     }
     case 'DELETE_EXPENSE': {
       const expenses = state.expenses.filter(e => e.id !== action.payload)
-      return persistWallet(state, state.reloads, state.orders, expenses)
+      return recomputeWallet(state, state.reloads, state.orders, expenses)
     }
 
     // --- Accounts ---
     case 'ADD_ACCOUNT': {
       const accounts = [...state.accounts, { ...action.payload, id: generateId() }]
-      persist(STORAGE_KEYS.ACCOUNTS, accounts)
       return { ...state, accounts }
     }
     case 'UPDATE_ACCOUNT': {
       const accounts = state.accounts.map(a =>
         a.id === action.payload.id ? action.payload : a
       )
-      persist(STORAGE_KEYS.ACCOUNTS, accounts)
       return { ...state, accounts }
     }
     case 'DELETE_ACCOUNT': {
       const accounts = state.accounts.filter(a => a.id !== action.payload)
-      persist(STORAGE_KEYS.ACCOUNTS, accounts)
       return { ...state, accounts }
     }
     // An adjustment is stored as a signed delta on the account itself, and
@@ -763,7 +735,6 @@ function appReducer(state, action) {
         ]
         return { ...a, adjustments }
       })
-      persist(STORAGE_KEYS.ACCOUNTS, accounts)
       return { ...state, accounts }
     }
     case 'UPDATE_ADJUSTMENT': {
@@ -778,7 +749,6 @@ function appReducer(state, action) {
           ),
         }
       })
-      persist(STORAGE_KEYS.ACCOUNTS, accounts)
       return { ...state, accounts }
     }
     case 'DELETE_ADJUSTMENT': {
@@ -791,7 +761,6 @@ function appReducer(state, action) {
           adjustments: (a.adjustments || []).filter(adj => adj.id !== adjustmentId),
         }
       })
-      persist(STORAGE_KEYS.ACCOUNTS, accounts)
       return { ...state, accounts }
     }
 
@@ -802,19 +771,16 @@ function appReducer(state, action) {
     // enforced by TransferModal, the sole dispatcher of these actions.
     case 'ADD_TRANSFER': {
       const transfers = [...state.transfers, { ...action.payload, id: generateId() }]
-      persist(STORAGE_KEYS.TRANSFERS, transfers)
       return { ...state, transfers }
     }
     case 'UPDATE_TRANSFER': {
       const transfers = state.transfers.map(t =>
         t.id === action.payload.id ? action.payload : t
       )
-      persist(STORAGE_KEYS.TRANSFERS, transfers)
       return { ...state, transfers }
     }
     case 'DELETE_TRANSFER': {
       const transfers = state.transfers.filter(t => t.id !== action.payload)
-      persist(STORAGE_KEYS.TRANSFERS, transfers)
       return { ...state, transfers }
     }
 
@@ -823,8 +789,304 @@ function appReducer(state, action) {
   }
 }
 
-export function AppProvider({ children }) {
-  const [state, dispatch] = useReducer(appReducer, null, loadInitialState)
+const backupRequired = ['suppliers', 'shipments', 'products', 'sales', 'expenses', 'accounts']
+const datasetKeys = Object.keys(STORAGE_KEYS).map(key => key.toLowerCase())
 
-  return <AppContext.Provider value={{ state, dispatch }}>{children}</AppContext.Provider>
+function sameDataset(left, right) {
+  return left !== null && right !== null && datasetKeys.every(key =>
+    JSON.stringify(left[key]) === JSON.stringify(right[key])
+  )
+}
+
+function editorOpen() {
+  return Boolean(document.querySelector('.modal-overlay.active, .tab-form-view.active form')) ||
+    ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName)
+}
+
+function prepareImport(value) {
+  if (!value || backupRequired.some(key => !Array.isArray(value[key]))) {
+    throw new Error('The backup is missing one or more required record lists.')
+  }
+  return loadInitialState(value)
+}
+
+async function fetchInitial() {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const result = await storageApi('dataset')
+    if (result.dataset === null) return result
+    const migrated = loadInitialState(result.dataset)
+    if (sameDataset(migrated, result.dataset)) {
+      return { revision: result.revision, dataset: migrated }
+    }
+    try {
+      const saved = await storageApi('dataset', { revision: result.revision, dataset: migrated })
+      return { revision: saved.revision, dataset: migrated }
+    } catch (error) {
+      if (error.status !== 409) throw error
+    }
+  }
+  throw new Error('The data changed during startup. Reload to try again.')
+}
+
+function StorageSetup({ revision, onReady }) {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const fileRef = useRef(null)
+  const [legacy] = useState(() => {
+    try {
+      return { result: readLegacyBrowserData(window.localStorage), error: '' }
+    } catch (cause) {
+      return { result: null, error: cause.message }
+    }
+  })
+
+  async function start(dataset) {
+    setBusy(true)
+    setError('')
+    try {
+      const saved = await storageApi('dataset', { revision, dataset })
+      onReady(dataset, saved.revision)
+    } catch (cause) {
+      setError(cause.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function importFile(event) {
+    const file = event.target.files?.[0]
+    if (!file) return
+    try {
+      await start(prepareImport(JSON.parse(await file.text())))
+    } catch (cause) {
+      setError(cause.message)
+    }
+    event.target.value = ''
+  }
+
+  return (
+    <main className="storage-gate">
+      <div className="storage-gate-card">
+        <h1>Set up Okanemo</h1>
+        <p>This installation has no business data yet. Recover records stored by this browser, import a JSON backup, or start fresh.</p>
+        {legacy.result && (
+          <div className="storage-recovery">
+            <strong>Old browser data found</strong>
+            <p>{legacy.result.recordCount} records were found in {legacy.result.keyCount} Okanemo storage lists at <code>{window.location.origin}</code>.</p>
+            <button className="btn-primary" disabled={busy} onClick={() => start(loadInitialState(legacy.result.dataset))}>
+              Recover Browser Data
+            </button>
+          </div>
+        )}
+        {legacy.error && <p role="alert" className="storage-error">{legacy.error}</p>}
+        {error && <p role="alert" className="storage-error">{error}</p>}
+        <div className="storage-gate-actions">
+          <input ref={fileRef} type="file" accept=".json,application/json" onChange={importFile} disabled={busy} hidden />
+          <button className="btn-primary" disabled={busy} onClick={() => fileRef.current.click()}>Import Backup</button>
+          <button className="btn-secondary" disabled={busy} onClick={() => start(loadInitialState())}>
+            Start Fresh
+          </button>
+        </div>
+        <p className="storage-hint">Browser data is tied to the exact address. If it is not detected, reopen this app in Firefox using the same address and port you used before.</p>
+      </div>
+    </main>
+  )
+}
+
+export function AppProvider({ children }) {
+  const [stage, setStage] = useState('loading')
+  const [state, setState] = useState(null)
+  const [error, setError] = useState('')
+  const [problem, setProblem] = useState(null)
+  const [saving, setSaving] = useState(false)
+  const stateRef = useRef(null)
+  const revisionRef = useRef(0)
+  const dirtyRef = useRef(false)
+  const savingRef = useRef(false)
+  const problemRef = useRef(null)
+  const flushRef = useRef(null)
+  const bootRef = useRef(null)
+
+  function accept(dataset, revision) {
+    stateRef.current = dataset
+    revisionRef.current = revision
+    dirtyRef.current = false
+    problemRef.current = null
+    setProblem(null)
+    setState(dataset)
+    setStage(dataset === null ? 'setup' : 'ready')
+  }
+
+  useEffect(() => {
+    bootRef.current ??= fetchInitial()
+    bootRef.current.then(
+      result => accept(result.dataset, result.revision),
+      cause => { setError(cause.message); setStage('error') }
+    )
+  }, [])
+
+  flushRef.current = async () => {
+    if (savingRef.current || !dirtyRef.current || problemRef.current) return
+    savingRef.current = true
+    setSaving(true)
+    const snapshot = stateRef.current
+    const revision = revisionRef.current
+    try {
+      const saved = await storageApi('dataset', { revision, dataset: snapshot })
+      revisionRef.current = saved.revision
+      if (stateRef.current === snapshot) dirtyRef.current = false
+    } catch (cause) {
+      // A lost response can follow a successful commit. Check before calling it
+      // a conflict, so retry never overwrites another tab's work.
+      try {
+        const latest = await storageApi('dataset')
+        if (sameDataset(latest.dataset, snapshot)) {
+          revisionRef.current = latest.revision
+          if (stateRef.current === snapshot) dirtyRef.current = false
+        } else {
+          const issue = { type: 'conflict', message: cause.status === 409 ? cause.message : 'The server has different data. Export this unsaved copy before reloading.' }
+          problemRef.current = issue
+          setProblem(issue)
+        }
+      } catch {
+        const issue = { type: 'unavailable', message: 'The storage server is unavailable. Your unsaved data is still in this tab.' }
+        problemRef.current = issue
+        setProblem(issue)
+      }
+    } finally {
+      savingRef.current = false
+      setSaving(false)
+      if (dirtyRef.current && !problemRef.current) flushRef.current()
+    }
+  }
+
+  const dispatch = useCallback(action => {
+    if (problemRef.current || !stateRef.current) return false
+    const next = appReducer(stateRef.current, action)
+    if (next === stateRef.current) return true
+    stateRef.current = next
+    dirtyRef.current = true
+    setState(next)
+    flushRef.current()
+    return true
+  }, [])
+  const listBackups = useCallback(() => storageApi('backups'), [])
+
+  useEffect(() => {
+    const onFocus = async () => {
+      if (!stateRef.current || dirtyRef.current || savingRef.current || problemRef.current) return
+      if (editorOpen()) return
+      const seenRevision = revisionRef.current
+      try {
+        const latest = await storageApi('dataset')
+        if (revisionRef.current !== seenRevision || !stateRef.current) return
+        if (dirtyRef.current || savingRef.current || problemRef.current) return
+        if (editorOpen()) return
+        if (latest.revision !== revisionRef.current) accept(
+          latest.dataset === null ? null : loadInitialState(latest.dataset), latest.revision
+        )
+      } catch {
+        if (revisionRef.current !== seenRevision || dirtyRef.current || savingRef.current) return
+        const issue = { type: 'unavailable', message: 'The storage server is unavailable. Edits are paused.' }
+        problemRef.current = issue
+        setProblem(issue)
+      }
+    }
+    const onVisible = () => { if (document.visibilityState === 'visible') onFocus() }
+    window.addEventListener('focus', onFocus)
+    document.addEventListener('visibilitychange', onVisible)
+    return () => {
+      window.removeEventListener('focus', onFocus)
+      document.removeEventListener('visibilitychange', onVisible)
+    }
+  }, [])
+
+  useEffect(() => {
+    const beforeUnload = event => {
+      if (!dirtyRef.current) return
+      event.preventDefault()
+      event.returnValue = ''
+    }
+    window.addEventListener('beforeunload', beforeUnload)
+    return () => window.removeEventListener('beforeunload', beforeUnload)
+  }, [])
+
+  async function restoreDataset(raw) {
+    if (dirtyRef.current || savingRef.current) throw new Error('Wait for the current save to finish.')
+    const dataset = prepareImport(raw)
+    const saved = await storageApi('restore', { revision: revisionRef.current, dataset, confirmation: 'RESTORE' })
+    accept(dataset, saved.revision)
+  }
+
+  async function restoreBackup(name) {
+    if (dirtyRef.current || savingRef.current) throw new Error('Wait for the current save to finish.')
+    const saved = await storageApi('restore-backup', { revision: revisionRef.current, name, confirmation: 'RESTORE' })
+    const migrated = loadInitialState(saved.dataset)
+    if (sameDataset(migrated, saved.dataset)) {
+      accept(migrated, saved.revision)
+    } else {
+      const updated = await storageApi('dataset', { revision: saved.revision, dataset: migrated })
+      accept(migrated, updated.revision)
+    }
+  }
+
+  async function clearDataset() {
+    if (dirtyRef.current || savingRef.current) throw new Error('Wait for the current save to finish.')
+    const result = await storageApi('clear', { revision: revisionRef.current, confirmation: 'CLEAR' })
+    accept(null, result.revision)
+  }
+
+  function downloadUnsaved() {
+    const blob = new Blob([JSON.stringify({ version: 3, ...stateRef.current }, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `okanemo-unsaved-${new Date().toISOString().slice(0, 10)}.json`
+    link.click()
+    URL.revokeObjectURL(url)
+  }
+
+  async function retryStorage() {
+    if (dirtyRef.current) {
+      problemRef.current = null
+      setProblem(null)
+      flushRef.current()
+      return
+    }
+    try {
+      const latest = await storageApi('dataset')
+      accept(latest.dataset === null ? null : loadInitialState(latest.dataset), latest.revision)
+    } catch {
+      const issue = { type: 'unavailable', message: 'The storage server is still unavailable. Edits are paused.' }
+      problemRef.current = issue
+      setProblem(issue)
+    }
+  }
+
+  if (stage === 'loading') return <div className="storage-gate">Loading business data…</div>
+  if (stage === 'error') return (
+    <div className="storage-gate"><div className="storage-gate-card">
+      <h1>Storage unavailable</h1><p role="alert">{error}</p>
+      <button className="btn-primary" onClick={() => window.location.reload()}>Retry</button>
+    </div></div>
+  )
+  if (stage === 'setup') return <StorageSetup revision={revisionRef.current} onReady={accept} />
+
+  return (
+    <AppContext.Provider value={{ state, dispatch, restoreDataset, restoreBackup, clearDataset, listBackups }}>
+      {children}
+      {saving && !problem && <div className="storage-saving" role="status">Saving…</div>}
+      {problem && <div className="storage-blocker"><div className="storage-gate-card" role="alertdialog" aria-modal="true">
+        <h2>Changes are not saved</h2>
+        <p>{problem.message}</p>
+        <div className="storage-gate-actions">
+          {dirtyRef.current && <button className="btn-secondary" onClick={downloadUnsaved}>Download unsaved copy</button>}
+          {problem.type === 'unavailable' && <button className="btn-primary" onClick={retryStorage}>Retry connection</button>}
+          <button className="btn-danger" onClick={() => {
+            if (window.confirm('Reload the server data? Any unsaved changes in this tab will be lost.')) window.location.reload()
+          }}>Reload server data</button>
+        </div>
+      </div></div>}
+    </AppContext.Provider>
+  )
 }

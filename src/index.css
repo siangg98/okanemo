@@ -2967,3 +2967,84 @@ form {
 .translate-icon {
     font-size: 14px;
 }
+/* Server storage states */
+.storage-gate,
+.storage-blocker {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+}
+
+.storage-blocker {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  background: rgba(0, 0, 0, 0.72);
+}
+
+.storage-gate-card {
+  width: min(100%, 540px);
+  padding: 32px;
+  border-radius: var(--radius-lg);
+  background: var(--bg-card);
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.2);
+}
+
+.storage-gate-card h1,
+.storage-gate-card h2 {
+  margin-bottom: 14px;
+}
+
+.storage-gate-card p {
+  line-height: 1.5;
+  margin-bottom: 20px;
+}
+
+.storage-gate-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.storage-gate .storage-hint {
+  margin: 18px 0 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.storage-error {
+  color: var(--danger-strong);
+}
+
+.storage-recovery {
+  margin: 20px 0;
+  padding: 18px;
+  border: 1px solid var(--accent-primary);
+  border-radius: var(--radius-md);
+  background: var(--accent-bg);
+}
+
+.storage-recovery p {
+  margin: 6px 0 14px;
+  color: var(--text-secondary);
+}
+
+.storage-recovery code {
+  color: var(--text-primary);
+}
+
+.storage-saving {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 9000;
+  padding: 8px 14px;
+  border-radius: var(--radius-md);
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.15);
+}
