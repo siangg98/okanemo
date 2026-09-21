@@ -17,8 +17,6 @@ Okanemo helps a small business track purchasing, inventory, sales, and finances 
 
 ## Docker
 
-Before replacing an older Okanemo installation, open its Settings page and **export a JSON backup**. Browser `localStorage` is tied to the old origin and is not copied into Docker automatically.
-
 To show Okanemo as one Docker Desktop row named `okanemo`, use the standalone launcher:
 
 ```powershell
@@ -40,20 +38,6 @@ npm install
 npm run server    # storage API on http://127.0.0.1:8080
 npm run dev       # in a second terminal; UI on http://localhost:5173
 ```
-
-### Recover old Firefox data without Docker
-
-Firefox keeps the old records in `localStorage` for the exact address that served Okanemo. The hostname and port must both match; `localhost` and `127.0.0.1` are different browser storage locations.
-
-1. Start the storage server with `npm run server`.
-2. In another terminal, start the UI at the old address. For the usual development address, run `npm run dev -- --host localhost --port 5173`.
-3. In Firefox, open that exact old address, such as <http://localhost:5173>.
-4. On the setup screen, choose **Recover Browser Data**. The screen shows how many old records it found before importing anything.
-5. Open Settings and export a JSON backup immediately.
-
-If the old address used `127.0.0.1`, use `--host 127.0.0.1` and open that hostname. If it used another port, replace `5173` with that port. If it used port `8080`, run `npm run build`, then `npm run server`, and open the exact `localhost` or `127.0.0.1` address you previously used.
-
-This no-Docker setup stores SQLite at `./data/okanemo.sqlite`. When Docker is available later, export JSON from the local setup, stop the local server, start Docker, and import the JSON into the empty Docker installation.
 
 ## Commands
 

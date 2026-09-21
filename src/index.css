@@ -3010,31 +3010,8 @@ form {
   align-items: center;
 }
 
-.storage-gate .storage-hint {
-  margin: 18px 0 0;
-  color: var(--text-secondary);
-  font-size: 13px;
-}
-
 .storage-error {
   color: var(--danger-strong);
-}
-
-.storage-recovery {
-  margin: 20px 0;
-  padding: 18px;
-  border: 1px solid var(--accent-primary);
-  border-radius: var(--radius-md);
-  background: var(--accent-bg);
-}
-
-.storage-recovery p {
-  margin: 6px 0 14px;
-  color: var(--text-secondary);
-}
-
-.storage-recovery code {
-  color: var(--text-primary);
 }
 
 .storage-saving {
