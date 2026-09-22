@@ -957,6 +957,12 @@ h1, h2, h3, h4, h5, h6 {
     border: 1px solid var(--border-color);
     border-radius: var(--radius-md);
     padding: 16px;
+    /* Column flex so a card holding a single figure can hand it the leftover
+       height rather than letting it collect as dead space under the heading —
+       see .profit-margin. The list cards are unaffected: a column flex parent
+       stretches its children across, not down. */
+    display: flex;
+    flex-direction: column;
 }
 
 .detail-card h3 {
@@ -966,13 +972,22 @@ h1, h2, h3, h4, h5, h6 {
     color: var(--text-primary);
 }
 
+/* The row's other two cards carry four rows each, so this one is stretched to
+   a height one figure cannot fill. It claims that height instead of ignoring
+   it: the figure centres in whatever is left below the heading, and is sized to
+   hold the space. At the old 34px, with body's 1.6 leading and the card's
+   default top alignment, it read as a small number adrift in a large card. */
 .profit-margin {
     font-family: var(--font-mono);
     font-variant-numeric: tabular-nums;
-    font-size: 34px;
+    font-size: 46px;
     font-weight: 600;
-    text-align: center;
-    padding: 12px;
+    line-height: 1;
+    letter-spacing: -0.02em;
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
     color: var(--success-text);
 }
 
