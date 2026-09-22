@@ -880,6 +880,9 @@ export function AppProvider({ children }) {
   const [error, setError] = useState('')
   const [problem, setProblem] = useState(null)
   const [saving, setSaving] = useState(false)
+  // The daily backup no longer blocks a save, so a broken backup folder would
+  // otherwise fail in silence. This surfaces it without standing in the way.
+  const [warning, setWarning] = useState('')
   const stateRef = useRef(null)
   const revisionRef = useRef(0)
   const dirtyRef = useRef(false)
@@ -915,6 +918,7 @@ export function AppProvider({ children }) {
     try {
       const saved = await storageApi('dataset', { revision, dataset: snapshot })
       revisionRef.current = saved.revision
+      setWarning(saved.warning || '')
       if (stateRef.current === snapshot) dirtyRef.current = false
     } catch (cause) {
       // A lost response can follow a successful commit. Check before calling it
@@ -925,7 +929,14 @@ export function AppProvider({ children }) {
           revisionRef.current = latest.revision
           if (stateRef.current === snapshot) dirtyRef.current = false
         } else {
-          const issue = { type: 'conflict', message: cause.status === 409 ? cause.message : 'The server has different data. Export this unsaved copy before reloading.' }
+          // Only a 409 means someone else moved the data on. Anything else —
+          // the server erroring on its own account — left the dataset where it
+          // was and is worth retrying, so it must not be dressed up as a
+          // conflict: that dialog offers no retry, and the only button that
+          // clears it throws the unsaved change away.
+          const issue = cause.status === 409
+            ? { type: 'conflict', message: cause.message }
+            : { type: 'unavailable', message: `The server could not save this change: ${cause.message}` }
           problemRef.current = issue
           setProblem(issue)
         }
@@ -1057,6 +1068,10 @@ export function AppProvider({ children }) {
     <AppContext.Provider value={{ state, dispatch, restoreDataset, restoreBackup, clearDataset, listBackups }}>
       {children}
       {saving && !problem && <div className="storage-saving" role="status">Saving…</div>}
+      {warning && !problem && <div className="storage-warning" role="status">
+        <span>{warning}</span>
+        <button type="button" aria-label="Dismiss" onClick={() => setWarning('')}>×</button>
+      </div>}
       {problem && <div className="storage-blocker"><div className="storage-gate-card" role="alertdialog" aria-modal="true">
         <h2>Changes are not saved</h2>
         <p>{problem.message}</p>

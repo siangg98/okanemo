@@ -1,0 +1,5 @@
+# Keep the daily backup out of the save path
+
+The routine dated backup is best effort: when it fails the save still commits and the browser is told so in a dismissible warning. The pre-restore and pre-clear backups keep blocking, because there the snapshot is the only thing standing between the owner and the data about to be replaced. We changed this after an unwritable backup folder — a bind mount that dropped out from under the container — made every save fail with a 500: the browser kept its own copy, reported a conflict that no other tab had caused, and the edit was lost on the reload that dismissed it. Losing one day's snapshot is a smaller harm than refusing to record the day's work, and the hourly timer picks the snapshot back up once the folder returns.
+
+A save rejected for any reason other than a stale revision is now retryable rather than presented as a conflict. A conflict dialog offers no retry and its only clearing action discards the unsaved change, so dressing a transient server failure up as one cost the owner work that the server had never refused to take.

@@ -142,6 +142,31 @@ async function dailyBackup() {
   for (const old of daily.slice(0, -30)) rmSync(join(backupDir, old))
 }
 
+/**
+ * The routine daily snapshot, downgraded to best effort.
+ *
+ * `backupDir` is usually a bind mount, and a mount can go away underneath a
+ * running server: a disconnected host share, a folder moved out from under
+ * Docker, a full disk. Letting that abort the write meant a failing backup
+ * silently stopped the app from saving anything at all — the browser kept its
+ * copy, reported a phantom conflict, and the change was lost on reload.
+ *
+ * Missing one day's snapshot is the smaller harm. Restore and clear keep their
+ * blocking `safetyBackup`: there the snapshot is the only thing standing
+ * between the user and the data they are about to overwrite.
+ *
+ * Returns the failure message, or null when the backup is in hand.
+ */
+async function tryDailyBackup() {
+  try {
+    await dailyBackup()
+    return null
+  } catch (error) {
+    console.error('Daily backup failed:', error)
+    return `Today's backup could not be written (${error.message}). Your data is saved, but check the backup folder.`
+  }
+}
+
 async function safetyBackup(reason) {
   if (current().dataset === null) return
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-')
@@ -236,10 +261,10 @@ const server = createServer(async (req, res) => {
         return reply(res, 200, await serialize(async () => {
           checkRevision(body.revision)
           const wasEmpty = current().dataset === null
-          await dailyBackup()
+          const warning = await tryDailyBackup()
           const revision = writeDocument(dataset)
-          if (wasEmpty) await dailyBackup()
-          return { revision }
+          if (wasEmpty) await tryDailyBackup()
+          return warning ? { revision, warning } : { revision }
         }))
       }
       if (pathname === '/api/restore' || pathname === '/api/restore-backup') {
