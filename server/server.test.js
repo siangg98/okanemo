@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { once } from 'node:events'
-import { mkdtempSync, readdirSync, rmSync } from 'node:fs'
+import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve, sep } from 'node:path'
 import { test } from 'node:test'
@@ -95,4 +95,43 @@ test('volume data persists, stale saves fail, and backups restore the full datas
   assert.deepEqual((await request(running.base, '/api/dataset')).body, { revision: 4, dataset: null })
   assert.equal((await request(running.base, '/api/dataset', { revision: 4, dataset: original })).body.revision, 5)
   assert.deepEqual((await request(running.base, '/api/dataset')).body.dataset, original)
+})
+
+// A backup folder is typically a bind mount, and mounts vanish: the host share
+// drops, the folder is moved, the disk fills. When that took the whole save
+// down with it the app looked like it was losing edits to a phantom other tab.
+test('a save survives an unwritable backup folder, but clear still refuses', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'okanemo-backup-test-'))
+  const dataDir = join(directory, 'data')
+  const backupDir = join(directory, 'backups')
+  const running = await startServer(dataDir, backupDir)
+  t.after(async () => {
+    if (running.child.exitCode === null) await stopServer(running.child)
+    const safeRoot = resolve(tmpdir()) + sep
+    assert.ok(resolve(directory).startsWith(safeRoot))
+    rmSync(directory, { recursive: true, force: true })
+  })
+
+  const original = empty()
+  original.accounts.push({ id: 'account-1', name: 'Bank', currency: 'MYR' })
+  assert.equal((await request(running.base, '/api/dataset', { revision: 0, dataset: original })).body.revision, 1)
+
+  // Put a plain file where the backup directory was, so every write under it
+  // fails the way a dropped mount does.
+  rmSync(backupDir, { recursive: true, force: true })
+  writeFileSync(backupDir, 'not a directory')
+
+  const withSale = empty()
+  withSale.accounts.push({ id: 'account-1', name: 'Bank', currency: 'MYR' })
+  withSale.sales.push({ id: 'sale-1', reference: '260908GW4JRVKN', sellingPrice: 300 })
+  const saved = await request(running.base, '/api/dataset', { revision: 1, dataset: withSale })
+  assert.equal(saved.status, 200)
+  assert.equal(saved.body.revision, 2)
+  assert.match(saved.body.warning, /backup/i)
+  assert.deepEqual((await request(running.base, '/api/dataset')).body.dataset, withSale)
+
+  // Destructive operations keep their blocking safety backup: the snapshot is
+  // the only thing standing between the user and the data being replaced.
+  assert.equal((await request(running.base, '/api/clear', { revision: 2, confirmation: 'CLEAR' })).status, 500)
+  assert.deepEqual((await request(running.base, '/api/dataset')).body.dataset, withSale)
 })
