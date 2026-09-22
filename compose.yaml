@@ -10,3 +10,10 @@ services:
 
 volumes:
   okanemo-data:
+    # Pinned, because Compose otherwise prefixes a named volume with the project
+    # directory and would mount okanemo_okanemo-data here — a second, empty
+    # database. The README and scripts/docker-standalone.ps1 both name
+    # okanemo-data as the one volume holding the working dataset, and the
+    # launcher adopts whatever /data volume a Compose container adopted, so an
+    # unpinned name propagates the empty one to standalone runs too.
+    name: okanemo-data
